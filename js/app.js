@@ -32,7 +32,7 @@ let currentRange = "1M";
 const CHORO = ["#f0f9fb", "#d3ecf1", "#a8d8e2", "#79c1d1", "#4ea6bd", "#2f8ba3", "#1c6e88", "#0e5670"];
 
 function choroColor(value, breaks) {
-  if (value == null || value === 0) return "#f5f7fa";
+  if (value == null || value === 0) return "#e2e8ec";
   for (let i = 0; i < breaks.length; i++) {
     if (value <= breaks[i]) return CHORO[i];
   }
@@ -76,6 +76,7 @@ async function boot() {
   }
 }
 async function loadData() {
+  console.info("[dashboard] fetching", { wards: urlOf("wards.geojson"), sensors: urlOf("sensors.json") });
   const [ws, ss, mf] = await Promise.all([
     fetch(urlOf("wards.geojson")).then(r => r.json()),
     fetch(urlOf("sensors.json")).then(r => r.json()),
@@ -84,6 +85,7 @@ async function loadData() {
   wards = ws;
   sensors = ss;
   manifest = mf;
+  console.info("[dashboard] loaded", { wards: wards.features.length, sensors: sensors.length, sensorsWithData: sensors.filter(s => s.has_data).length, manifest });
   for (const s of sensors) {
     sensorsByUid[s.uid] = s;
     if (s.ward_no != null) (sensorsByWard[s.ward_no] = sensorsByWard[s.ward_no] || []).push(s);
@@ -110,11 +112,11 @@ function renderWards() {
 
   wardLayer = L.geoJSON(wards, {
     style: feat => ({
-      color: "#ffffff",
-      weight: 1,
+      color: "#0b3d4c",
+      weight: 1.4,
       opacity: 0.9,
       fillColor: currentShading === "none" ? "#ffffff" : choroColor(shadingValue(feat), breaks),
-      fillOpacity: currentShading === "none" ? 0 : 0.7,
+      fillOpacity: currentShading === "none" ? 0.05 : 0.55,
     }),
     onEachFeature: (feat, layer) => {
       const p = feat.properties;
@@ -151,11 +153,11 @@ function renderSensors() {
   const visible = sensors.filter(s => s.lat != null && s.lng != null && (showAllSensors || s.has_data));
   for (const s of visible) {
     const m = L.circleMarker([s.lat, s.lng], {
-      radius: 5,
-      color: s.has_data ? "#0b3d4c" : "#9aa4b0",
-      weight: 1.2,
-      fillColor: s.has_data ? "#1c7293" : "#e5e9ee",
-      fillOpacity: s.has_data ? 0.85 : 0.6,
+      radius: 6,
+      color: "#ffffff",
+      weight: 1.6,
+      fillColor: s.has_data ? "#dc2626" : "#94a3b8",
+      fillOpacity: 0.95,
     });
     const wardLabel = s.ward_no != null ? `Ward ${s.ward_no} — ${s.ward_name || ""}` : "Unassigned";
     m.bindTooltip(`<b>${s.uid}</b><br/>${wardLabel}${s.has_data ? "" : " · <i>no data</i>"}`, { className: "sensor-tip", direction: "top" });
