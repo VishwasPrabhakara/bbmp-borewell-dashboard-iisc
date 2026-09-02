@@ -7,3 +7,4 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+worker/seed_generated/

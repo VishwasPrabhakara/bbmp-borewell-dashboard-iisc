@@ -1,7 +1,19 @@
 // BBMP Borewell Dashboard — IISc for BWSSB
 // Full-screen map first. Everything else opens on click.
 
-const DATA_BASE = "./data";   // relative to dashboard/index.html
+const CONFIG = window.DASHBOARD_CONFIG || { source: "static", apiBase: "" };
+function urlOf(name) {
+  if (CONFIG.source === "api" && CONFIG.apiBase) {
+    const map = { "wards.geojson": "/api/wards.geojson", "sensors.json": "/api/sensors", "manifest.json": "/api/manifest" };
+    return CONFIG.apiBase.replace(/\/$/, "") + map[name];
+  }
+  return `./data/${name}`;
+}
+function seriesUrlOf(uid) {
+  return CONFIG.source === "api" && CONFIG.apiBase
+    ? CONFIG.apiBase.replace(/\/$/, "") + "/api/sensor/" + uid + "/series"
+    : `./data/sensor_series/${uid}.json`;
+}
 let sensors = [];              // full list
 let wards = null;              // GeoJSON
 let manifest = null;
@@ -43,25 +55,31 @@ function computeBreaks(values) {
 
 // ---------- Boot ----------
 async function boot() {
-  await loadData();
   initMap();
   buildLegend();
-  renderWards();
-  renderSensors();
   wireToolbar();
   wireSearch();
   wireFilters();
   wireLegend();
   wireDetailClose();
-  document.getElementById("about-manifest").textContent =
-    `Snapshot: ${manifest.kh_zip}. ${manifest.sensor_with_data} sensors reporting between ${fmtDate(manifest.period_start)} and ${fmtDate(manifest.period_end)}, across ${manifest.wards_with_data} wards.`;
+  try {
+    await loadData();
+    renderWards();
+    renderSensors();
+    document.getElementById("about-manifest").textContent =
+      `Snapshot: ${manifest.kh_zip}. ${manifest.sensor_with_data} sensors reporting between ${fmtDate(manifest.period_start)} and ${fmtDate(manifest.period_end)}, across ${manifest.wards_with_data} wards.`;
+  } catch (err) {
+    console.error("Dashboard data load failed:", err);
+    document.getElementById("about-manifest").textContent =
+      "Could not load data files. Check the browser console (F12) — usually a 404 on /data/wards.geojson.";
+    openOverlay("about-overlay");
+  }
 }
-
 async function loadData() {
   const [ws, ss, mf] = await Promise.all([
-    fetch(`${DATA_BASE}/wards.geojson`).then(r => r.json()),
-    fetch(`${DATA_BASE}/sensors.json`).then(r => r.json()),
-    fetch(`${DATA_BASE}/manifest.json`).then(r => r.json()),
+    fetch(urlOf("wards.geojson")).then(r => r.json()),
+    fetch(urlOf("sensors.json")).then(r => r.json()),
+    fetch(urlOf("manifest.json")).then(r => r.json()),
   ]);
   wards = ws;
   sensors = ss;
@@ -389,7 +407,7 @@ function sensorChartsHTML() {
 }
 
 async function loadAndRenderSeries(uid) {
-  const res = await fetch(`${DATA_BASE}/sensor_series/${uid}.json`);
+  const res = await fetch(seriesUrlOf(uid));
   if (!res.ok) return;
   currentSensorSeries = await res.json();
   currentRange = "1M";

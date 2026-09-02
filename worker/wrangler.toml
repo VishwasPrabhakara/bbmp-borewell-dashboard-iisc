@@ -1,0 +1,25 @@
+# Cloudflare Worker + D1 config for the BBMP Borewell Dashboard (IISc for BWSSB).
+# 1) Install wrangler once:  npm i -g wrangler
+# 2) Log in:  wrangler login
+# 3) Create the D1 DB:  wrangler d1 create bbmp-borewell-iisc
+#    Copy the printed database_id into database_id below.
+# 4) Create tables:  wrangler d1 execute bbmp-borewell-iisc --remote --file=schema.sql
+# 5) Seed from ../data:  python seed_d1.py       # writes seed_generated/*.sql
+#    then:  wrangler d1 execute bbmp-borewell-iisc --remote --file=seed_generated/wards.sql
+#           wrangler d1 execute bbmp-borewell-iisc --remote --file=seed_generated/sensors.sql
+#           for /f "usebackq" %f in (`dir /b seed_generated\series`) do wrangler d1 execute bbmp-borewell-iisc --remote --file=seed_generated/series/%f
+# 6) Deploy:  wrangler deploy
+# 7) Copy the printed https://bbmp-borewell-iisc.<subdomain>.workers.dev URL
+#    into ../js/config.js as API_BASE, then commit and push.
+
+name = "bbmp-borewell-iisc"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bbmp-borewell-iisc"
+database_id = "REPLACE_WITH_YOUR_DB_ID"
+
+[observability]
+enabled = true

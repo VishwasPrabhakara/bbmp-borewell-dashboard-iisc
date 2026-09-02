@@ -1,3 +1,6 @@
+/* Force hidden attribute to actually hide, even when other rules set display:flex */
+[hidden] { display: none !important; }
+
 /* BBMP Borewell Dashboard — IISc for BWSSB
    Clean, minimal, international feel. Slate/teal palette, generous whitespace,
    no default sidebars. */
