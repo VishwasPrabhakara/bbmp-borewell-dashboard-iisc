@@ -233,6 +233,7 @@ function wireSearch() {
 
 function runSearch(q, container) {
   container.innerHTML = "";
+  if (!wards || !sensors) { container.innerHTML = '<div class="loading">Data still loading, please wait...</div>'; return; }
   const query = q.toLowerCase();
   const items = [];
 
