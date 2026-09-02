@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BBMP Borewell Dashboard · IISc for BWSSB</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" integrity="sha512-h9FcoyWjHcOcmEVkxOfTLnmZFWIH0iZhZT1H2TbOq55xssQGEJHEaIm+PgoUaZbRvQTNTluNOEfb1ZRy6D3BOw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<!-- FULL-SCREEN MAP -->
+<div id="map"></div>
+
+<!-- FLOATING HEADER (minimal, top-left) -->
+<div id="brand" class="floating">
+  <div class="brand-title">BBMP Borewell Dashboard</div>
+  <div class="brand-sub">Indian Institute of Science · for BWSSB</div>
+</div>
+
+<!-- TOP-RIGHT ACTION BAR -->
+<div id="toolbar" class="floating">
+  <button id="btn-search" class="tool" title="Search wards or sensors (Ctrl-K)">
+    <svg viewBox="0 0 24 24" width="20" height="20"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19zM9.5 14C7 14 5 12 5 9.5S7 5 9.5 5 14 7 14 9.5 12 14 9.5 14"/></svg>
+  </button>
+  <button id="btn-filter" class="tool" title="Filters &amp; layers">
+    <svg viewBox="0 0 24 24" width="20" height="20"><path d="M10 18h4v-2h-4zM3 6v2h18V6zm3 7h12v-2H6z"/></svg>
+  </button>
+  <button id="btn-info" class="tool" title="About this dashboard">
+    <svg viewBox="0 0 24 24" width="20" height="20"><path d="M11 17h2v-6h-2zm1-15C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2m0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8M11 9h2V7h-2z"/></svg>
+  </button>
+</div>
+
+<!-- BOTTOM-RIGHT LEGEND & LAYER TOGGLE -->
+<div id="legend" class="floating">
+  <div class="legend-row">
+    <label class="switch">
+      <input type="checkbox" id="show-all-sensors" />
+      <span class="track"><span class="thumb"></span></span>
+    </label>
+    <span class="switch-label">Show sensors with no data</span>
+  </div>
+  <div class="legend-scale" id="legend-scale"></div>
+  <div class="legend-caption">Wards shaded by sensor count</div>
+</div>
+
+<!-- SEARCH OVERLAY (hidden by default) -->
+<div id="search-overlay" class="overlay" hidden>
+  <div class="overlay-panel search-panel">
+    <div class="search-header">
+      <input id="search-input" type="text" placeholder="Search by ward name, ward number, or UID..." autocomplete="off" />
+      <button class="close-btn" data-close="search-overlay">×</button>
+    </div>
+    <div id="search-results" class="search-results"></div>
+    <div class="search-hint">Tip: type "max sensors", "min sensors", or a ward name.</div>
+  </div>
+</div>
+
+<!-- FILTER OVERLAY (hidden by default) -->
+<div id="filter-overlay" class="overlay" hidden>
+  <div class="overlay-panel filter-panel">
+    <div class="panel-header">
+      <h3>Filters &amp; layers</h3>
+      <button class="close-btn" data-close="filter-overlay">×</button>
+    </div>
+    <div class="filter-section">
+      <div class="filter-label">Ward shading</div>
+      <div class="chip-group" data-group="shade">
+        <button class="chip active" data-shade="with_data">Sensors with data</button>
+        <button class="chip" data-shade="total">Total sensors</button>
+        <button class="chip" data-shade="population">Population</button>
+        <button class="chip" data-shade="none">None</button>
+      </div>
+    </div>
+    <div class="filter-section">
+      <div class="filter-label">Quick views</div>
+      <div class="chip-group vertical">
+        <button class="chip" data-quick="max_sensors">Top 10 wards by sensor count</button>
+        <button class="chip" data-quick="min_sensors">Wards with fewest sensors</button>
+        <button class="chip" data-quick="no_sensors">Wards with no sensors</button>
+        <button class="chip" data-quick="reset">Reset view</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- DETAIL PANEL (slides in from right) -->
+<div id="detail" class="detail-panel" hidden>
+  <div class="detail-header">
+    <div id="detail-title"></div>
+    <button class="close-btn" data-close="detail">×</button>
+  </div>
+  <div id="detail-body" class="detail-body"></div>
+</div>
+
+<!-- CHART MODAL (fullscreen chart on expand) -->
+<div id="chart-modal" class="overlay" hidden>
+  <div class="overlay-panel chart-modal-panel">
+    <div class="panel-header">
+      <h3 id="chart-modal-title"></h3>
+      <button class="close-btn" data-close="chart-modal">×</button>
+    </div>
+    <div id="chart-modal-body"></div>
+  </div>
+</div>
+
+<!-- ABOUT OVERLAY (hidden by default) -->
+<div id="about-overlay" class="overlay" hidden>
+  <div class="overlay-panel about-panel">
+    <div class="panel-header">
+      <h3>About</h3>
+      <button class="close-btn" data-close="about-overlay">×</button>
+    </div>
+    <div class="about-body">
+      <p><b>BBMP Borewell Dashboard</b> - Indian Institute of Science, prepared for BWSSB.</p>
+      <p>Wards are BBMP's 198-ward boundary. Sensor locations come from KH Projects. Water-level and discharge readings are taken from the latest KH cleaned Excel data snapshot; the shown period and total counts are on this page's summary card.</p>
+      <p id="about-manifest" class="muted"></p>
+      <p class="muted">Click any ward for its summary and sensor list; click a sensor to open its details and time-series charts.</p>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" integrity="sha512-BB3hKbKWOc9Ez/TAwyWxNXeoV9c1v6FIeYiBieIWkpLjauysF18NzgR1MBNBXf8/KABdlkX68nAhlwcDFLGPCQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js" integrity="sha512-CQBWl4fJHWbryGE+Pc7UAxWMUMNMWzWxF4SQo9CgkJIN1kx6djDQZjh3Y8SZ1d+6I+1zze6Z7kHXO7q3UyZAWw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

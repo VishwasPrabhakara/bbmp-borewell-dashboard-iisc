@@ -1,0 +1,9 @@
+# Local scratch
+_to_delete/
+*.pyc
+__pycache__/
+.venv/
+.env
+# OS
+.DS_Store
+Thumbs.db

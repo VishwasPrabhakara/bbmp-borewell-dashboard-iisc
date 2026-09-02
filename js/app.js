@@ -1,0 +1,494 @@
+// BBMP Borewell Dashboard — IISc for BWSSB
+// Full-screen map first. Everything else opens on click.
+
+const DATA_BASE = "./data";   // relative to dashboard/index.html
+let sensors = [];              // full list
+let wards = null;              // GeoJSON
+let manifest = null;
+let sensorsByUid = {};
+let sensorsByWard = {};        // ward_no -> [sensor]
+let currentSensorMarkers = null;
+let wardLayer = null;
+let map;
+let currentShading = "with_data";
+let showAllSensors = false;
+let charts = { water: null, discharge: null, modal: null };
+let currentSensorSeries = null;   // cached
+let currentRange = "1M";
+
+// ---------- Palette (choropleth: light -> dark teal) ----------
+const CHORO = ["#f0f9fb", "#d3ecf1", "#a8d8e2", "#79c1d1", "#4ea6bd", "#2f8ba3", "#1c6e88", "#0e5670"];
+
+function choroColor(value, breaks) {
+  if (value == null || value === 0) return "#f5f7fa";
+  for (let i = 0; i < breaks.length; i++) {
+    if (value <= breaks[i]) return CHORO[i];
+  }
+  return CHORO[CHORO.length - 1];
+}
+
+function computeBreaks(values) {
+  // Use quantile-ish breaks so shading spreads even for skewed distributions.
+  const clean = values.filter(v => v != null && v > 0).sort((a, b) => a - b);
+  if (clean.length === 0) return [1];
+  const n = CHORO.length;
+  const breaks = [];
+  for (let i = 1; i <= n; i++) {
+    const idx = Math.min(clean.length - 1, Math.round((i / n) * (clean.length - 1)));
+    breaks.push(clean[idx]);
+  }
+  // De-dupe consecutive equal breaks
+  return breaks.filter((v, i) => i === 0 || v > breaks[i - 1]);
+}
+
+// ---------- Boot ----------
+async function boot() {
+  await loadData();
+  initMap();
+  buildLegend();
+  renderWards();
+  renderSensors();
+  wireToolbar();
+  wireSearch();
+  wireFilters();
+  wireLegend();
+  wireDetailClose();
+  document.getElementById("about-manifest").textContent =
+    `Snapshot: ${manifest.kh_zip}. ${manifest.sensor_with_data} sensors reporting between ${fmtDate(manifest.period_start)} and ${fmtDate(manifest.period_end)}, across ${manifest.wards_with_data} wards.`;
+}
+
+async function loadData() {
+  const [ws, ss, mf] = await Promise.all([
+    fetch(`${DATA_BASE}/wards.geojson`).then(r => r.json()),
+    fetch(`${DATA_BASE}/sensors.json`).then(r => r.json()),
+    fetch(`${DATA_BASE}/manifest.json`).then(r => r.json()),
+  ]);
+  wards = ws;
+  sensors = ss;
+  manifest = mf;
+  for (const s of sensors) {
+    sensorsByUid[s.uid] = s;
+    if (s.ward_no != null) (sensorsByWard[s.ward_no] = sensorsByWard[s.ward_no] || []).push(s);
+  }
+}
+
+// ---------- Map ----------
+function initMap() {
+  map = L.map("map", { zoomControl: false, minZoom: 10, maxZoom: 18 }).setView([12.972, 77.594], 11);
+  L.control.zoom({ position: "bottomleft" }).addTo(map);
+  // Carto Positron - clean, minimal international-style basemap
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    subdomains: "abcd", maxZoom: 20,
+  }).addTo(map);
+}
+
+// ---------- Wards ----------
+function renderWards() {
+  const values = wards.features.map(f => shadingValue(f));
+  const breaks = computeBreaks(values);
+
+  if (wardLayer) wardLayer.remove();
+
+  wardLayer = L.geoJSON(wards, {
+    style: feat => ({
+      color: "#ffffff",
+      weight: 1,
+      opacity: 0.9,
+      fillColor: currentShading === "none" ? "#ffffff" : choroColor(shadingValue(feat), breaks),
+      fillOpacity: currentShading === "none" ? 0 : 0.7,
+    }),
+    onEachFeature: (feat, layer) => {
+      const p = feat.properties;
+      const tip = `
+        <div class="name">Ward ${p.ward_no} — ${p.ward_name}</div>
+        <div class="kv">Sensors with data: <b>${p.sensor_with_data || 0}</b> / ${p.sensor_total || 0}</div>
+        <div class="kv">Population: ${p.population ? Math.round(p.population).toLocaleString("en-IN") : "—"}</div>
+        <div class="kv">Area: ${p.area_km2 ? p.area_km2.toFixed(1) + " km²" : "—"}</div>
+      `;
+      layer.bindTooltip(tip, { className: "ward-tip", sticky: true, direction: "auto" });
+      layer.on({
+        mouseover: e => e.target.setStyle({ weight: 2.5, color: "#0b3d4c" }),
+        mouseout: e => wardLayer.resetStyle(e.target),
+        click: () => openWardDetail(p),
+      });
+    },
+  }).addTo(map);
+
+  buildLegend(breaks);
+}
+
+function shadingValue(feature) {
+  const p = feature.properties;
+  if (currentShading === "with_data") return p.sensor_with_data;
+  if (currentShading === "total") return p.sensor_total;
+  if (currentShading === "population") return p.population;
+  return null;
+}
+
+// ---------- Sensors ----------
+function renderSensors() {
+  if (currentSensorMarkers) currentSensorMarkers.remove();
+  currentSensorMarkers = L.layerGroup();
+  const visible = sensors.filter(s => s.lat != null && s.lng != null && (showAllSensors || s.has_data));
+  for (const s of visible) {
+    const m = L.circleMarker([s.lat, s.lng], {
+      radius: 5,
+      color: s.has_data ? "#0b3d4c" : "#9aa4b0",
+      weight: 1.2,
+      fillColor: s.has_data ? "#1c7293" : "#e5e9ee",
+      fillOpacity: s.has_data ? 0.85 : 0.6,
+    });
+    const wardLabel = s.ward_no != null ? `Ward ${s.ward_no} — ${s.ward_name || ""}` : "Unassigned";
+    m.bindTooltip(`<b>${s.uid}</b><br/>${wardLabel}${s.has_data ? "" : " · <i>no data</i>"}`, { className: "sensor-tip", direction: "top" });
+    m.on("click", () => openSensorDetail(s.uid));
+    currentSensorMarkers.addLayer(m);
+  }
+  currentSensorMarkers.addTo(map);
+}
+
+// ---------- Legend ----------
+function buildLegend(breaks) {
+  const el = document.getElementById("legend-scale");
+  el.innerHTML = "";
+  for (const c of CHORO) {
+    const span = document.createElement("span");
+    span.style.background = c;
+    el.appendChild(span);
+  }
+  const captions = {
+    with_data: "Wards shaded by sensors with data",
+    total: "Wards shaded by total sensors",
+    population: "Wards shaded by population",
+    none: "Ward shading off",
+  };
+  document.querySelector(".legend-caption").textContent = captions[currentShading] || "";
+}
+
+// ---------- Toolbar / overlays ----------
+function wireToolbar() {
+  document.getElementById("btn-search").addEventListener("click", () => openOverlay("search-overlay", () => document.getElementById("search-input").focus()));
+  document.getElementById("btn-filter").addEventListener("click", () => openOverlay("filter-overlay"));
+  document.getElementById("btn-info").addEventListener("click", () => openOverlay("about-overlay"));
+  document.addEventListener("keydown", e => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      openOverlay("search-overlay", () => document.getElementById("search-input").focus());
+    }
+    if (e.key === "Escape") closeAllOverlays();
+  });
+  // Close on background click
+  document.querySelectorAll(".overlay").forEach(ov => {
+    ov.addEventListener("click", e => { if (e.target === ov) ov.hidden = true; });
+  });
+  document.querySelectorAll("[data-close]").forEach(btn => {
+    btn.addEventListener("click", () => { document.getElementById(btn.dataset.close).hidden = true; });
+  });
+}
+
+function openOverlay(id, cb) {
+  closeAllOverlays();
+  const el = document.getElementById(id);
+  el.hidden = false;
+  if (cb) setTimeout(cb, 0);
+}
+function closeAllOverlays() {
+  document.querySelectorAll(".overlay").forEach(o => o.hidden = true);
+}
+
+function wireDetailClose() {
+  document.querySelector("#detail .close-btn").addEventListener("click", () => {
+    document.getElementById("detail").hidden = true;
+  });
+}
+
+// ---------- Search ----------
+function wireSearch() {
+  const input = document.getElementById("search-input");
+  const results = document.getElementById("search-results");
+  const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+  input.addEventListener("input", debounce(() => runSearch(input.value.trim(), results), 120));
+  runSearch("", results); // initial: show top wards
+}
+
+function runSearch(q, container) {
+  container.innerHTML = "";
+  const query = q.toLowerCase();
+  const items = [];
+
+  // Statistical shortcuts
+  if (!query || "max sensors top most".includes(query.split(" ")[0])) {
+    if (query.startsWith("max") || query.startsWith("top") || !query) {
+      const sorted = [...wards.features].sort((a, b) => (b.properties.sensor_with_data || 0) - (a.properties.sensor_with_data || 0)).slice(0, 8);
+      sorted.forEach(f => items.push({ kind: "ward-quick", label: `Ward ${f.properties.ward_no} · ${f.properties.ward_name}`, sub: `${f.properties.sensor_with_data} sensors`, feat: f, badge: "top" }));
+    }
+  }
+  if (query.startsWith("min") || query.startsWith("few") || query === "no sensors") {
+    const wSorted = wards.features
+      .filter(f => (f.properties.sensor_with_data || 0) > 0)
+      .sort((a, b) => (a.properties.sensor_with_data || 0) - (b.properties.sensor_with_data || 0))
+      .slice(0, 8);
+    wSorted.forEach(f => items.push({ kind: "ward-quick", label: `Ward ${f.properties.ward_no} · ${f.properties.ward_name}`, sub: `${f.properties.sensor_with_data} sensors`, feat: f, badge: "min" }));
+  }
+
+  // Regular ward + UID matching
+  if (query.length >= 1) {
+    for (const f of wards.features) {
+      const p = f.properties;
+      const name = String(p.ward_name || "").toLowerCase();
+      const no = String(p.ward_no || "");
+      if (name.includes(query) || no === query || no.startsWith(query)) {
+        items.push({ kind: "ward", label: `Ward ${p.ward_no} · ${p.ward_name}`, sub: `${p.sensor_with_data}/${p.sensor_total} sensors`, feat: f });
+      }
+      if (items.length > 40) break;
+    }
+    for (const s of sensors) {
+      if (s.uid.toLowerCase().includes(query)) {
+        items.push({ kind: "sensor", label: s.uid, sub: s.ward_name ? `Ward ${s.ward_no} · ${s.ward_name}` : "Unassigned", sensor: s });
+      }
+      if (items.length > 60) break;
+    }
+  }
+
+  if (items.length === 0) {
+    container.innerHTML = `<div class="loading">No matches. Try a ward name, ward number, or a UID.</div>`;
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  items.slice(0, 40).forEach(it => {
+    const row = document.createElement("div");
+    row.className = "search-item";
+    row.innerHTML = `<div><div class="primary">${it.label}</div><div class="secondary">${it.sub}</div></div>${it.badge ? `<span class="badge">${it.badge}</span>` : ""}`;
+    row.onclick = () => {
+      closeAllOverlays();
+      if (it.kind === "sensor") openSensorDetail(it.sensor.uid);
+      else openWardDetail(it.feat.properties, it.feat);
+    };
+    frag.appendChild(row);
+  });
+  container.appendChild(frag);
+}
+
+// ---------- Filters ----------
+function wireFilters() {
+  document.querySelectorAll("[data-shade]").forEach(chip => {
+    chip.addEventListener("click", () => {
+      document.querySelectorAll("[data-shade]").forEach(c => c.classList.remove("active"));
+      chip.classList.add("active");
+      currentShading = chip.dataset.shade;
+      renderWards();
+    });
+  });
+  document.querySelectorAll("[data-quick]").forEach(chip => {
+    chip.addEventListener("click", () => {
+      const which = chip.dataset.quick;
+      closeAllOverlays();
+      if (which === "reset") { map.setView([12.972, 77.594], 11); return; }
+      const filtered = wards.features
+        .filter(f => which === "no_sensors" ? (f.properties.sensor_with_data || 0) === 0 : (f.properties.sensor_with_data || 0) > 0)
+        .sort((a, b) => which === "max_sensors" ? (b.properties.sensor_with_data || 0) - (a.properties.sensor_with_data || 0) : (a.properties.sensor_with_data || 0) - (b.properties.sensor_with_data || 0));
+      const top = filtered.slice(0, which === "no_sensors" ? filtered.length : 10);
+      if (top.length && top[0].properties.centroid) {
+        const bounds = L.latLngBounds(top.map(f => [f.properties.centroid[1], f.properties.centroid[0]]));
+        map.fitBounds(bounds, { padding: [40, 40] });
+      }
+    });
+  });
+}
+
+function wireLegend() {
+  document.getElementById("show-all-sensors").addEventListener("change", e => {
+    showAllSensors = e.target.checked;
+    renderSensors();
+  });
+}
+
+// ---------- Detail panel: ward ----------
+function openWardDetail(p, feat) {
+  const panel = document.getElementById("detail");
+  const title = document.getElementById("detail-title");
+  const body = document.getElementById("detail-body");
+  title.innerHTML = `<div class="kicker">Ward ${p.ward_no}</div><h2>${p.ward_name || "—"}</h2>`;
+  const list = (sensorsByWard[p.ward_no] || []).sort((a, b) => (b.has_data - a.has_data) || (a.uid > b.uid ? 1 : -1));
+  const withData = list.filter(s => s.has_data).length;
+  body.innerHTML = `
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-label">Sensors with data</div><div class="stat-value">${withData}</div><div class="stat-sub">out of ${list.length} total</div></div>
+      <div class="stat-card"><div class="stat-label">Population (proj. 2026)</div><div class="stat-value">${p.population ? Math.round(p.population).toLocaleString("en-IN") : "—"}</div></div>
+      <div class="stat-card"><div class="stat-label">Area</div><div class="stat-value small">${p.area_km2 ? p.area_km2.toFixed(2) + " km²" : "—"}</div></div>
+      <div class="stat-card"><div class="stat-label">Households</div><div class="stat-value small">${p.households ? Math.round(p.households).toLocaleString("en-IN") : "—"}</div></div>
+    </div>
+    <div class="section-title">Sensors in this ward (${list.length})</div>
+    <div class="uid-list" id="ward-uid-list"></div>
+  `;
+  const ul = body.querySelector("#ward-uid-list");
+  if (list.length === 0) {
+    ul.innerHTML = `<div class="loading">No sensors registered in this ward.</div>`;
+  } else {
+    list.forEach(s => {
+      const row = document.createElement("div");
+      row.className = "uid-item";
+      row.innerHTML = `<span class="uid-mono">${s.uid}</span><span class="uid-tag ${s.has_data ? "data" : "nodata"}">${s.has_data ? "data" : "no data"}</span>`;
+      row.onclick = () => openSensorDetail(s.uid);
+      ul.appendChild(row);
+    });
+  }
+  panel.hidden = false;
+
+  if (feat) {
+    const bbox = L.geoJSON(feat).getBounds();
+    map.fitBounds(bbox, { padding: [40, 40] });
+  }
+}
+
+// ---------- Detail panel: sensor ----------
+async function openSensorDetail(uid) {
+  const s = sensorsByUid[uid];
+  if (!s) return;
+  const panel = document.getElementById("detail");
+  const title = document.getElementById("detail-title");
+  const body = document.getElementById("detail-body");
+  title.innerHTML = `<div class="kicker">Sensor</div><h2>${s.uid}</h2>`;
+  body.innerHTML = `
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-label">Ward</div><div class="stat-value small">${s.ward_no != null ? `${s.ward_no} · ${s.ward_name || ""}` : "Unassigned"}</div></div>
+      <div class="stat-card"><div class="stat-label">Motor HP</div><div class="stat-value small">${s.motor_hp != null ? s.motor_hp : "—"}</div></div>
+      <div class="stat-card"><div class="stat-label">Borewell depth</div><div class="stat-value small">${s.borewell_depth != null ? s.borewell_depth + " ft" : "—"}</div></div>
+      <div class="stat-card"><div class="stat-label">Readings</div><div class="stat-value small">${(s.reading_count || 0).toLocaleString("en-IN")}</div></div>
+      <div class="stat-card"><div class="stat-label">First reading</div><div class="stat-value small">${fmtDate(s.first_data_at)}</div></div>
+      <div class="stat-card"><div class="stat-label">Last reading</div><div class="stat-value small">${fmtDate(s.last_data_at)}</div></div>
+    </div>
+    ${s.has_data ? sensorChartsHTML() : `<div class="loading">No time-series data for this sensor in the current snapshot.</div>`}
+  `;
+  panel.hidden = false;
+  if (s.lat != null && s.lng != null) map.panTo([s.lat, s.lng]);
+  if (s.has_data) {
+    await loadAndRenderSeries(uid);
+    wireRangeChips();
+  }
+}
+
+function sensorChartsHTML() {
+  const chips = ["1W", "1M", "3M", "ALL"].map(r => `<button class="range-chip${r === "1M" ? " active" : ""}" data-range="${r}">${r}</button>`).join("");
+  return `
+    <div class="chart-block">
+      <div class="chart-header">
+        <div class="chart-title">Water level (ft below surface)</div>
+        <div class="chart-actions">${chips}<button class="expand-btn" data-expand="water" title="Expand">⤢</button></div>
+      </div>
+      <div class="chart-canvas-wrap"><canvas id="chart-water"></canvas></div>
+    </div>
+    <div class="chart-block">
+      <div class="chart-header">
+        <div class="chart-title">Discharge (L/min)</div>
+        <div class="chart-actions">${chips}<button class="expand-btn" data-expand="discharge" title="Expand">⤢</button></div>
+      </div>
+      <div class="chart-canvas-wrap"><canvas id="chart-discharge"></canvas></div>
+    </div>
+  `;
+}
+
+async function loadAndRenderSeries(uid) {
+  const res = await fetch(`${DATA_BASE}/sensor_series/${uid}.json`);
+  if (!res.ok) return;
+  currentSensorSeries = await res.json();
+  currentRange = "1M";
+  drawCharts();
+}
+
+function filteredSeries(range) {
+  const s = currentSensorSeries;
+  if (!s) return { times: [], water: [], flow: [] };
+  const times = s.times.map(t => new Date(t));
+  const last = times.length ? times[times.length - 1] : new Date();
+  let from = null;
+  if (range === "1W") from = new Date(last.getTime() - 7 * 86400000);
+  else if (range === "1M") from = new Date(last.getTime() - 30 * 86400000);
+  else if (range === "3M") from = new Date(last.getTime() - 90 * 86400000);
+  const out = { times: [], water: [], flow: [] };
+  for (let i = 0; i < times.length; i++) {
+    if (from && times[i] < from) continue;
+    out.times.push(times[i]);
+    out.water.push(s.water_ft[i]);
+    out.flow.push(s.flow_lpm[i]);
+  }
+  return out;
+}
+
+function drawCharts() {
+  if (charts.water) charts.water.destroy();
+  if (charts.discharge) charts.discharge.destroy();
+  const d = filteredSeries(currentRange);
+  const commonOpts = {
+    responsive: true, maintainAspectRatio: false, animation: { duration: 250 },
+    interaction: { mode: "nearest", intersect: false },
+    plugins: { legend: { display: false }, tooltip: { backgroundColor: "rgba(11,61,76,0.95)" } },
+    scales: {
+      x: { type: "time", time: { tooltipFormat: "dd MMM HH:mm" }, ticks: { color: "#5a6472" }, grid: { display: false } },
+      y: { ticks: { color: "#5a6472" }, grid: { color: "#eef2f5" } },
+    },
+    elements: { point: { radius: 0 }, line: { borderWidth: 1.6 } },
+  };
+  charts.water = new Chart(document.getElementById("chart-water"), {
+    type: "line",
+    data: { labels: d.times, datasets: [{ data: d.water, borderColor: "#1e3a8a", backgroundColor: "rgba(30,58,138,0.08)", fill: true, tension: 0.15 }] },
+    options: { ...commonOpts, scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, title: { display: true, text: "ft below surface", color: "#5a6472" } } } },
+  });
+  charts.discharge = new Chart(document.getElementById("chart-discharge"), {
+    type: "line",
+    data: { labels: d.times, datasets: [{ data: d.flow, borderColor: "#0891b2", backgroundColor: "rgba(8,145,178,0.08)", fill: true, tension: 0.1 }] },
+    options: { ...commonOpts, scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, title: { display: true, text: "L/min", color: "#5a6472" } } } },
+  });
+}
+
+function wireRangeChips() {
+  document.querySelectorAll(".range-chip").forEach(chip => {
+    chip.addEventListener("click", () => {
+      const parent = chip.parentElement;
+      parent.querySelectorAll(".range-chip").forEach(c => c.classList.remove("active"));
+      // sync both blocks to the same range
+      currentRange = chip.dataset.range;
+      document.querySelectorAll(".range-chip").forEach(c => {
+        c.classList.toggle("active", c.dataset.range === currentRange);
+      });
+      drawCharts();
+    });
+  });
+  document.querySelectorAll(".expand-btn").forEach(btn => {
+    btn.addEventListener("click", () => openChartModal(btn.dataset.expand));
+  });
+}
+
+function openChartModal(which) {
+  const title = which === "water" ? "Water level (ft below surface)" : "Discharge (L/min)";
+  document.getElementById("chart-modal-title").textContent = `${title} — ${currentSensorSeries.uid}`;
+  const body = document.getElementById("chart-modal-body");
+  body.innerHTML = `<canvas id="chart-modal-canvas"></canvas>`;
+  openOverlay("chart-modal");
+  const d = filteredSeries(currentRange);
+  const color = which === "water" ? "#1e3a8a" : "#0891b2";
+  const yTitle = which === "water" ? "ft below surface" : "L/min";
+  if (charts.modal) charts.modal.destroy();
+  charts.modal = new Chart(document.getElementById("chart-modal-canvas"), {
+    type: "line",
+    data: { labels: d.times, datasets: [{ data: which === "water" ? d.water : d.flow, borderColor: color, backgroundColor: color + "1A", fill: true, tension: 0.15 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { backgroundColor: "rgba(11,61,76,0.95)" } },
+      scales: {
+        x: { type: "time", time: { tooltipFormat: "dd MMM yyyy HH:mm" }, grid: { color: "#eef2f5" } },
+        y: { title: { display: true, text: yTitle } },
+      },
+      elements: { point: { radius: 0 }, line: { borderWidth: 1.8 } },
+    },
+  });
+}
+
+// ---------- Utils ----------
+function fmtDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+boot();
