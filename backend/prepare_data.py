@@ -250,7 +250,11 @@ def main():
         return None
     i_ward = col("Ward_NO")
     i_area = col("Area_km2")
-    i_pop_now = col("Projected_Population_2026") or col("Projected_Population_2024") or col("Population_2011")
+    i_pop_2001 = col("Population_2001")
+    i_pop_2011 = col("Population_2011")
+    i_pop_2024 = col("Projected_Population_2024")
+    i_pop_2026 = col("Projected_Population_2026") or col("Projected_Population_2024") or col("Population_2011")
+    i_pop_now = i_pop_2026
     i_hh = col("Projected_Households_2024") or col("Households_2011")
     pop_by_ward = {}
     for r in pop_rows[1:]:
@@ -260,10 +264,18 @@ def main():
             wn = int(float(r[i_ward]))
         except Exception:
             continue
+        def _pick(idx):
+            if idx is None or r[idx] is None: return None
+            try: return float(r[idx])
+            except Exception: return None
         pop_by_ward[wn] = {
-            "area_km2": float(r[i_area]) if i_area is not None and r[i_area] is not None else None,
-            "population": float(r[i_pop_now]) if i_pop_now is not None and r[i_pop_now] is not None else None,
-            "households": float(r[i_hh]) if i_hh is not None and r[i_hh] is not None else None,
+            "area_km2": _pick(i_area),
+            "population_2001": _pick(i_pop_2001),
+            "population_2011": _pick(i_pop_2011),
+            "population_2024": _pick(i_pop_2024),
+            "population_2026": _pick(i_pop_2026),
+            "population": _pick(i_pop_now),   # kept for backward compat
+            "households": _pick(i_hh),
         }
     print(f"  {len(pop_by_ward)} wards with population data")
 
@@ -379,8 +391,10 @@ def main():
                 "ward_no": ward_no,
                 "ward_name": ward_name,
                 "area_km2": pop.get("area_km2"),
-                "population": pop.get("population"),
-                "households": pop.get("households"),
+                "population_2001": pop.get("population_2001"),
+                "population_2011": pop.get("population_2011"),
+                "population_2024": pop.get("population_2024"),
+                "population_2026": pop.get("population_2026"),
                 "sensor_total": counts["total"],
                 "sensor_with_data": counts["with_data"],
                 "centroid": centroid,

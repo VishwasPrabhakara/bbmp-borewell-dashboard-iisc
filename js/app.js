@@ -342,12 +342,14 @@ function openWardDetail(p, feat) {
   title.innerHTML = `<div class="kicker">Ward ${p.ward_no}</div><h2>${p.ward_name || "—"}</h2>`;
   const list = (sensorsByWard[p.ward_no] || []).sort((a, b) => (b.has_data - a.has_data) || (a.uid > b.uid ? 1 : -1));
   const withData = list.filter(s => s.has_data).length;
+  const fmtInt = v => v == null ? "—" : Math.round(v).toLocaleString("en-IN");
   body.innerHTML = `
     <div class="stat-grid">
       <div class="stat-card"><div class="stat-label">Sensors with data</div><div class="stat-value">${withData}</div><div class="stat-sub">out of ${list.length} total</div></div>
-      <div class="stat-card"><div class="stat-label">Population (proj. 2026)</div><div class="stat-value">${p.population ? Math.round(p.population).toLocaleString("en-IN") : "—"}</div></div>
       <div class="stat-card"><div class="stat-label">Area</div><div class="stat-value small">${p.area_km2 ? p.area_km2.toFixed(2) + " km²" : "—"}</div></div>
-      <div class="stat-card"><div class="stat-label">Households</div><div class="stat-value small">${p.households ? Math.round(p.households).toLocaleString("en-IN") : "—"}</div></div>
+      <div class="stat-card"><div class="stat-label">Population 2001</div><div class="stat-value small">${fmtInt(p.population_2001)}</div><div class="stat-sub">Census</div></div>
+      <div class="stat-card"><div class="stat-label">Population 2011</div><div class="stat-value small">${fmtInt(p.population_2011)}</div><div class="stat-sub">Census</div></div>
+      <div class="stat-card"><div class="stat-label">Projected 2026</div><div class="stat-value small">${fmtInt(p.population_2026)}</div><div class="stat-sub">CAGR from 2001–10</div></div>
     </div>
     <div class="section-title">Sensors in this ward (${list.length})</div>
     <div class="uid-list" id="ward-uid-list"></div>
