@@ -22,6 +22,40 @@ let sensorsByWard = {};        // ward_no -> [sensor]
 let currentSensorMarkers = null;
 let wardLayer = null;
 let map;
+let selectedWardNo = null;
+
+function defaultWardStyle(feat) {
+  const p = feat.properties;
+  const isSelected = selectedWardNo != null && p.ward_no === selectedWardNo;
+  const dimmed = selectedWardNo != null && !isSelected;
+  return {
+    color: isSelected ? "#0b3d4c" : "#5a7a86",
+    weight: isSelected ? 2.6 : 1.2,
+    opacity: dimmed ? 0.15 : 0.9,
+    fillColor: isSelected ? "#028090" : "#a8d8e2",
+    fillOpacity: dimmed ? 0.05 : (isSelected ? 0.35 : 0.22),
+  };
+}
+
+function setSelectedWard(wardNo, feat) {
+  selectedWardNo = wardNo;
+  if (wardLayer) wardLayer.setStyle(defaultWardStyle);
+  renderSensors();
+  buildLegend();
+  if (feat) {
+    const bbox = L.geoJSON(feat).getBounds();
+    map.fitBounds(bbox, { padding: [40, 40], maxZoom: 15 });
+  }
+}
+
+function clearWardSelection() {
+  selectedWardNo = null;
+  if (wardLayer) wardLayer.setStyle(defaultWardStyle);
+  renderSensors();
+  document.getElementById("detail").hidden = true;
+  buildLegend();
+}
+
 let currentShading = "with_data";
 let showAllSensors = false;
 let charts = { water: null, discharge: null, modal: null };
@@ -94,6 +128,7 @@ async function loadData() {
 
 // ---------- Map ----------
 function initMap() {
+  // (map click handler wired after map is created)
   map = L.map("map", { zoomControl: false, minZoom: 10, maxZoom: 18 }).setView([12.972, 77.594], 11);
   L.control.zoom({ position: "bottomleft" }).addTo(map);
   // Carto Positron - clean, minimal international-style basemap
@@ -101,23 +136,19 @@ function initMap() {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     maxZoom: 19,
   }).addTo(map);
+  map.on("click", (e) => {
+    if (selectedWardNo != null && !e.originalEvent.target.closest(".leaflet-interactive")) {
+      clearWardSelection();
+    }
+  });
 }
 
 // ---------- Wards ----------
 function renderWards() {
-  const values = wards.features.map(f => shadingValue(f));
-  const breaks = computeBreaks(values);
-
   if (wardLayer) wardLayer.remove();
 
   wardLayer = L.geoJSON(wards, {
-    style: feat => ({
-      color: "#0b3d4c",
-      weight: 1.4,
-      opacity: 0.9,
-      fillColor: currentShading === "none" ? "#ffffff" : choroColor(shadingValue(feat), breaks),
-      fillOpacity: currentShading === "none" ? 0.05 : 0.55,
-    }),
+    style: feat => defaultWardStyle(feat),
     onEachFeature: (feat, layer) => {
       const p = feat.properties;
       const tip = `
@@ -130,12 +161,11 @@ function renderWards() {
       layer.on({
         mouseover: e => e.target.setStyle({ weight: 2.5, color: "#0b3d4c" }),
         mouseout: e => wardLayer.resetStyle(e.target),
-        click: () => openWardDetail(p),
+        click: () => { setSelectedWard(p.ward_no, feat); openWardDetail(p, feat); },
       });
     },
   }).addTo(map);
-
-  buildLegend(breaks);
+  buildLegend();
 }
 
 function shadingValue(feature) {
@@ -150,7 +180,7 @@ function shadingValue(feature) {
 function renderSensors() {
   if (currentSensorMarkers) currentSensorMarkers.remove();
   currentSensorMarkers = L.layerGroup();
-  const visible = sensors.filter(s => s.lat != null && s.lng != null && (showAllSensors || s.has_data));
+  const visible = sensors.filter(s => s.lat != null && s.lng != null && (showAllSensors || s.has_data) && (selectedWardNo == null || s.ward_no === selectedWardNo));
   for (const s of visible) {
     const m = L.circleMarker([s.lat, s.lng], {
       radius: 6,
@@ -168,21 +198,11 @@ function renderSensors() {
 }
 
 // ---------- Legend ----------
-function buildLegend(breaks) {
+function buildLegend() {
   const el = document.getElementById("legend-scale");
-  el.innerHTML = "";
-  for (const c of CHORO) {
-    const span = document.createElement("span");
-    span.style.background = c;
-    el.appendChild(span);
-  }
-  const captions = {
-    with_data: "Wards shaded by sensors with data",
-    total: "Wards shaded by total sensors",
-    population: "Wards shaded by population",
-    none: "Ward shading off",
-  };
-  document.querySelector(".legend-caption").textContent = captions[currentShading] || "";
+  if (el) el.style.display = "none";
+  const cap = document.querySelector(".legend-caption");
+  if (cap) cap.textContent = selectedWardNo != null ? "Ward isolated — click map background to clear" : "Click a ward to isolate";
 }
 
 // ---------- Toolbar / overlays ----------
@@ -217,9 +237,7 @@ function closeAllOverlays() {
 }
 
 function wireDetailClose() {
-  document.querySelector("#detail .close-btn").addEventListener("click", () => {
-    document.getElementById("detail").hidden = true;
-  });
+  document.querySelector("#detail .close-btn").addEventListener("click", () => clearWardSelection());
 }
 
 // ---------- Search ----------
@@ -292,14 +310,6 @@ function runSearch(q, container) {
 
 // ---------- Filters ----------
 function wireFilters() {
-  document.querySelectorAll("[data-shade]").forEach(chip => {
-    chip.addEventListener("click", () => {
-      document.querySelectorAll("[data-shade]").forEach(c => c.classList.remove("active"));
-      chip.classList.add("active");
-      currentShading = chip.dataset.shade;
-      renderWards();
-    });
-  });
   document.querySelectorAll("[data-quick]").forEach(chip => {
     chip.addEventListener("click", () => {
       const which = chip.dataset.quick;
@@ -355,11 +365,6 @@ function openWardDetail(p, feat) {
     });
   }
   panel.hidden = false;
-
-  if (feat) {
-    const bbox = L.geoJSON(feat).getBounds();
-    map.fitBounds(bbox, { padding: [40, 40] });
-  }
 }
 
 // ---------- Detail panel: sensor ----------

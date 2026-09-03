@@ -164,7 +164,7 @@ button { font-family: inherit; }
 .detail-panel {
   position: fixed;
   top: 16px; right: 16px; bottom: 16px;
-  width: 460px; max-width: calc(100vw - 32px);
+  width: 55vw; max-width: calc(100vw - 32px); min-width: 480px;
   z-index: 800;
   background: var(--panel);
   border-radius: var(--radius);
@@ -185,12 +185,12 @@ button { font-family: inherit; }
 #detail-title { flex: 1; }
 #detail-title .kicker { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; opacity: 0.8; }
 #detail-title h2 { margin: 4px 0 0; font-size: 18px; font-weight: 600; }
-.detail-body { padding: 16px 18px; overflow-y: auto; }
+.detail-body { padding: 14px 18px; overflow: hidden; display: flex; flex-direction: column; min-height: 0; flex: 1; gap: 10px; }
 
 /* Stat grid inside detail panel */
 .stat-grid {
-  display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;
-  margin-bottom: 16px;
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+  margin-bottom: 0; flex-shrink: 0;
 }
 .stat-card { background: #f7fafc; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
 .stat-label { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
@@ -199,7 +199,7 @@ button { font-family: inherit; }
 .stat-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
 .section-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 16px 0 8px; }
-.uid-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
+.uid-list { display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; flex-shrink: 0; }
 .uid-item {
   padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
   display: flex; justify-content: space-between; align-items: center; gap: 8px;
@@ -212,7 +212,7 @@ button { font-family: inherit; }
 .uid-item .uid-tag.nodata { background: #fef3c7; color: #92400e; }
 
 /* Charts inside detail panel */
-.chart-block { margin-top: 14px; border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: #fff; }
+.chart-block { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: #fff; display: flex; flex-direction: column; flex: 1 1 0; min-height: 180px; }
 .chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .chart-title { font-size: 13px; font-weight: 600; color: var(--text); }
 .chart-actions { display: flex; gap: 4px; align-items: center; }
@@ -224,7 +224,7 @@ button { font-family: inherit; }
   border-radius: 6px; margin-left: 6px;
 }
 .expand-btn:hover { background: #eef4f6; color: var(--brand-2); }
-.chart-canvas-wrap { position: relative; height: 200px; }
+.chart-canvas-wrap { position: relative; flex: 1 1 auto; min-height: 0; }
 
 /* Chart modal */
 .chart-modal-panel { max-width: 1100px; width: calc(100vw - 40px); height: calc(100vh - 120px); }
