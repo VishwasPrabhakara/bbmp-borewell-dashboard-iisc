@@ -343,10 +343,12 @@ function openWardDetail(p, feat) {
   const list = (sensorsByWard[p.ward_no] || []).sort((a, b) => (b.has_data - a.has_data) || (a.uid > b.uid ? 1 : -1));
   const withData = list.filter(s => s.has_data).length;
   const fmtInt = v => v == null ? "—" : Math.round(v).toLocaleString("en-IN");
+  const fmtMm = v => v == null ? "—" : v.toLocaleString("en-IN", { maximumFractionDigits: 0 }) + " mm";
   body.innerHTML = `
     <div class="stat-grid">
       <div class="stat-card"><div class="stat-label">Sensors with data</div><div class="stat-value">${withData}</div><div class="stat-sub">out of ${list.length} total</div></div>
       <div class="stat-card"><div class="stat-label">Area</div><div class="stat-value small">${p.area_km2 ? p.area_km2.toFixed(2) + " km²" : "—"}</div></div>
+      <div class="stat-card"><div class="stat-label">Rainfall (last 12 mo)</div><div class="stat-value small">${fmtMm(p.rainfall_mm_annual)}</div><div class="stat-sub">NASA POWER · <a href="#" data-download-rain="${p.ward_no}">Download</a></div></div>
       <div class="stat-card"><div class="stat-label">Population 2001</div><div class="stat-value small">${fmtInt(p.population_2001)}</div><div class="stat-sub">Census</div></div>
       <div class="stat-card"><div class="stat-label">Population 2011</div><div class="stat-value small">${fmtInt(p.population_2011)}</div><div class="stat-sub">Census</div></div>
       <div class="stat-card"><div class="stat-label">Projected 2026</div><div class="stat-value small">${fmtInt(p.population_2026)}</div><div class="stat-sub">CAGR from 2001–10</div></div>
@@ -518,5 +520,34 @@ function fmtDate(iso) {
   const d = new Date(iso);
   return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 }
+
+// -------- Rainfall CSV download --------
+async function downloadRainfallCsv(wardNo, grain) {
+  const res = await fetch(`./data/rainfall/${wardNo}.json`);
+  if (!res.ok) { alert("No rainfall data for this ward yet. Run backend/fetch_rainfall.py to populate."); return; }
+  const j = await res.json();
+  const rows = grain === "monthly"
+    ? [["month","rainfall_mm"], ...(j.monthly || []).map(r => [r.month, r.rainfall_mm])]
+    : [["date","rainfall_mm"], ...(j.daily || []).map(r => [r.date, r.rainfall_mm ?? ""])];
+  const csv = rows.map(r => r.join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `rainfall_ward${wardNo}_${grain}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+document.addEventListener("click", (e) => {
+  const el = e.target.closest("[data-download-rain]");
+  if (!el) return;
+  e.preventDefault();
+  const wardNo = el.dataset.downloadRain;
+  const grain = window.confirm("Daily rainfall CSV?\nOK = daily · Cancel = monthly") ? "daily" : "monthly";
+  downloadRainfallCsv(wardNo, grain);
+});
 
 boot();

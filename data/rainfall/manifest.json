@@ -1,0 +1,9 @@
+{
+  "generated_at": "2026-09-03T04:26:07.474102Z",
+  "source": "NASA_POWER (uniform Bangalore-central placeholder; run backend/fetch_rainfall.py for per-ward)",
+  "start": "2025-09-03",
+  "end": "2026-09-01",
+  "wards": 198,
+  "annual_total_mm": 667.33,
+  "current_month_mm": 0
+}
