@@ -38,10 +38,11 @@ function defaultWardStyle(feat) {
 }
 
 function panelWidthPx() {
-  // Detail panel is 55vw min 480px per style.css. Fall back to 0 if hidden.
-  const panel = document.getElementById("detail");
-  if (!panel || panel.hidden) return 0;
-  return panel.getBoundingClientRect().width;
+  // Match style.css: .detail { min-width: 480px; width: 55vw }.
+  // We compute from window width so this works even when the panel is still
+  // hidden at fit-time (openWardDetail runs AFTER setSelectedWard).
+  const vw = window.innerWidth || document.documentElement.clientWidth || 1200;
+  return Math.max(Math.round(vw * 0.55), 480);
 }
 
 function setSelectedWard(wardNo, feat) {
