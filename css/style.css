@@ -206,6 +206,7 @@ button { font-family: inherit; }
   transition: all 120ms ease; background: #fff;
 }
 .uid-item:hover { border-color: var(--brand-2); background: #f4f9fa; transform: translateY(-1px); }
+.uid-item.selected { border-color: #f59e0b; background: #fff7ed; box-shadow: 0 0 0 2px rgba(245,158,11,0.25); }
 .uid-item .uid-mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, monospace; font-size: 12.5px; }
 .uid-item .uid-tag { font-size: 10.5px; padding: 2px 8px; border-radius: 999px; }
 .uid-item .uid-tag.data { background: #d1fae5; color: #065f46; }

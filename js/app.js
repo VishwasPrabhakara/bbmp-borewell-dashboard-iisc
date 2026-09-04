@@ -37,19 +37,34 @@ function defaultWardStyle(feat) {
   };
 }
 
+function panelWidthPx() {
+  // Detail panel is 55vw min 480px per style.css. Fall back to 0 if hidden.
+  const panel = document.getElementById("detail");
+  if (!panel || panel.hidden) return 0;
+  return panel.getBoundingClientRect().width;
+}
+
 function setSelectedWard(wardNo, feat) {
   selectedWardNo = wardNo;
+  selectedSensorUid = null;
   if (wardLayer) wardLayer.setStyle(defaultWardStyle);
   renderSensors();
   buildLegend();
   if (feat) {
     const bbox = L.geoJSON(feat).getBounds();
-    map.fitBounds(bbox, { padding: [40, 40], maxZoom: 15 });
+    // Pretend the right panel is padding so the polygon fits into the visible left half.
+    const rightPad = Math.ceil(panelWidthPx()) + 40;
+    map.fitBounds(bbox, {
+      paddingTopLeft: [60, 60],
+      paddingBottomRight: [rightPad, 60],
+      maxZoom: 15,
+    });
   }
 }
 
 function clearWardSelection() {
   selectedWardNo = null;
+  selectedSensorUid = null;
   if (wardLayer) wardLayer.setStyle(defaultWardStyle);
   renderSensors();
   document.getElementById("detail").hidden = true;
@@ -60,6 +75,7 @@ let currentShading = "with_data";
 let showAllSensors = false;
 let charts = { water: null, discharge: null, modal: null };
 let currentSensorSeries = null;   // cached
+let selectedSensorUid = null;
 let currentRange = "1M";
 
 // ---------- Palette (choropleth: light -> dark teal) ----------
@@ -182,10 +198,11 @@ function renderSensors() {
   currentSensorMarkers = L.layerGroup();
   const visible = sensors.filter(s => s.lat != null && s.lng != null && (showAllSensors || s.has_data) && (selectedWardNo == null || s.ward_no === selectedWardNo));
   for (const s of visible) {
+    const isSel = selectedSensorUid === s.uid;
     const m = L.circleMarker([s.lat, s.lng], {
-      radius: 6,
-      color: "#ffffff",
-      weight: 1.6,
+      radius: isSel ? 11 : 6,
+      color: isSel ? "#f59e0b" : "#ffffff",
+      weight: isSel ? 3 : 1.6,
       fillColor: s.has_data ? "#dc2626" : "#94a3b8",
       fillOpacity: 0.95,
     });
@@ -193,6 +210,7 @@ function renderSensors() {
     m.bindTooltip(`<b>${s.uid}</b><br/>${wardLabel}${s.has_data ? "" : " · <i>no data</i>"}`, { className: "sensor-tip", direction: "top" });
     m.on("click", () => openSensorDetail(s.uid));
     currentSensorMarkers.addLayer(m);
+    if (isSel) m.bringToFront();
   }
   currentSensorMarkers.addTo(map);
 }
@@ -348,7 +366,7 @@ function openWardDetail(p, feat) {
     <div class="stat-grid">
       <div class="stat-card"><div class="stat-label">Sensors with data</div><div class="stat-value">${withData}</div><div class="stat-sub">out of ${list.length} total</div></div>
       <div class="stat-card"><div class="stat-label">Area</div><div class="stat-value small">${p.area_km2 ? p.area_km2.toFixed(2) + " km²" : "—"}</div></div>
-      <div class="stat-card"><div class="stat-label">Rainfall (last 12 mo)</div><div class="stat-value small">${fmtMm(p.rainfall_mm_annual)}</div><div class="stat-sub">NASA POWER · <a href="#" data-download-rain="${p.ward_no}">Download</a></div></div>
+      <div class="stat-card"><div class="stat-label">Rainfall (last 12 mo)</div><div class="stat-value small">${fmtMm(p.rainfall_mm_annual)}</div><div class="stat-sub">KWRIS + KSNDMC · <a href="#" data-download-rain="${p.ward_no}">Download</a></div></div>
       <div class="stat-card"><div class="stat-label">Population 2001</div><div class="stat-value small">${fmtInt(p.population_2001)}</div><div class="stat-sub">Census</div></div>
       <div class="stat-card"><div class="stat-label">Population 2011</div><div class="stat-value small">${fmtInt(p.population_2011)}</div><div class="stat-sub">Census</div></div>
       <div class="stat-card"><div class="stat-label">Projected 2026</div><div class="stat-value small">${fmtInt(p.population_2026)}</div><div class="stat-sub">CAGR from 2001–10</div></div>
@@ -362,7 +380,8 @@ function openWardDetail(p, feat) {
   } else {
     list.forEach(s => {
       const row = document.createElement("div");
-      row.className = "uid-item";
+      row.className = "uid-item" + (selectedSensorUid === s.uid ? " selected" : "");
+      row.dataset.uid = s.uid;
       row.innerHTML = `<span class="uid-mono">${s.uid}</span><span class="uid-tag ${s.has_data ? "data" : "nodata"}">${s.has_data ? "data" : "no data"}</span>`;
       row.onclick = () => openSensorDetail(s.uid);
       ul.appendChild(row);
@@ -375,6 +394,12 @@ function openWardDetail(p, feat) {
 async function openSensorDetail(uid) {
   const s = sensorsByUid[uid];
   if (!s) return;
+  selectedSensorUid = uid;
+  renderSensors();
+  // If the ward-list is visible, refresh row highlighting without re-rendering the whole panel.
+  document.querySelectorAll(".uid-item").forEach(el => {
+    el.classList.toggle("selected", el.dataset.uid === uid);
+  });
   const panel = document.getElementById("detail");
   const title = document.getElementById("detail-title");
   const body = document.getElementById("detail-body");

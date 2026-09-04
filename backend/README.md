@@ -8,7 +8,8 @@ Python scripts that build the dashboard's `data/` folder from raw sources. Run t
 backend/
   prepare_data.py            Main entry point: reads KH ZIP + ward shapefile + population xlsx (+ optional sensors_db.json) and writes ../data/{wards.geojson, sensors.json, manifest.json, sensor_series/*.json}.
   sensors_db_extract.py      One-shot dump of the sensors table from your Neon Postgres DB into ../data/sensors_db.json (adds motor HP, borewell depth, pump name, and the full KH-known UID list beyond the 579 that are currently reporting).
-  requirements.txt           Python deps: sqlalchemy, psycopg2-binary, openpyxl, pyshp.
+  fetch_rainfall.py          Rainfall pipeline: KWRIS historical daily (2009->recent) + KSNDMC BBMP live daily append, merged into ../data/rainfall/<ward>.json.
+  requirements.txt           Python deps: sqlalchemy, psycopg2-binary, openpyxl, pyshp, requests.
 ```
 
 ## First-time setup
@@ -90,6 +91,41 @@ python prepare_data.py
 - Runs a single `SELECT uid, lat, lng, ward_no, ward_name, motor_hp, borewell_depth, pump_name, first_data_at, last_data_at, total_readings FROM sensors ORDER BY uid`.
 - Writes the result as JSON into `../data/sensors_db.json`.
 - Only reads; never writes to the DB.
+
+### `fetch_rainfall.py`
+
+Combines two public feeds into one continuous daily rainfall series per BBMP ward:
+
+- **KWRIS** (`water.karnataka.gov.in/RainfallAnalytics`) - historical daily rainfall from ~2009 up to about 5 weeks behind today, via undocumented public POST endpoints. No login. Bengaluru Urban stations only; each station's lat/lng is spatial-joined to its ward.
+- **KSNDMC BBMP live** (`ksndmc.org:6443/arcgis/rest/services/BBMP_WEATHER_MAP/MapServer/0`) - current-day 24 hr rainfall for the 100 BBMP TRG stations, each already tagged with a `WARD_NO`. Used to fill the trailing gap that KWRIS hasn't published yet.
+
+Subcommands:
+
+```
+python fetch_rainfall.py history --start 2009      # one-time bootstrap (slow: scrapes every KWRIS station)
+python fetch_rainfall.py live                      # daily cron: appends today's KSNDMC readings
+python fetch_rainfall.py build                     # merges caches into ../data/rainfall/<ward>.json + patches wards.geojson
+python fetch_rainfall.py all --start 2009          # history + live + build in one shot
+```
+
+Outputs:
+
+```
+../data_raw/kwris_stations.csv                    KWRIS station catalog for Bengaluru Urban
+../data_raw/kwris_daily/<GUID>.csv                per-station daily rainfall (cached; only re-run when you widen the year range)
+../data_raw/ksndmc_daily_bbmp.csv                 rolling live-poll log (date, station_code, ward_no, rainfall_mm)
+../data/rainfall/<ward_no>.json                   dashboard-facing: {daily[], monthly[], annual_total_mm, current_month_mm}
+../data/wards.geojson                             patched with rainfall_mm_annual, rainfall_mm_month_current, rainfall_source, rainfall_updated_at
+```
+
+Set up the daily cron once (Windows Task Scheduler is easiest):
+
+```
+schtasks /Create /SC DAILY /ST 23:55 /TN "BBMP rainfall live" ^
+  /TR "python \"C:\path\to\backend\fetch_rainfall.py\" live"
+```
+
+Then re-run `build` (weekly, or after any `history` refresh) to regenerate the per-ward JSONs.
 
 ## KH scraping (out of scope for this repo)
 
