@@ -45,12 +45,31 @@ function panelWidthPx() {
   return Math.max(Math.round(vw * 0.55), 480);
 }
 
+function panToLatLngLeftHalf(lat, lng, zoom) {
+  // Shift the pan target east by half the panel width in screen space, so the
+  // actual point ends up centered inside the visible left slice of the map.
+  const z = zoom != null ? zoom : map.getZoom();
+  const half = panelWidthPx() / 2;
+  const src = map.project([lat, lng], z);
+  const shifted = src.add([half, 0]);
+  const target = map.unproject(shifted, z);
+  if (zoom != null) map.setView(target, zoom);
+  else map.panTo(target);
+}
+
+function updateClearFilterChip() {
+  const chip = document.getElementById("clear-filter-chip");
+  if (!chip) return;
+  chip.hidden = (selectedWardNo == null && selectedSensorUid == null);
+}
+
 function setSelectedWard(wardNo, feat) {
   selectedWardNo = wardNo;
   selectedSensorUid = null;
   if (wardLayer) wardLayer.setStyle(defaultWardStyle);
   renderSensors();
   buildLegend();
+  updateClearFilterChip();
   if (feat) {
     const bbox = L.geoJSON(feat).getBounds();
     // Pretend the right panel is padding so the polygon fits into the visible left half.
@@ -70,6 +89,7 @@ function clearWardSelection() {
   renderSensors();
   document.getElementById("detail").hidden = true;
   buildLegend();
+  updateClearFilterChip();
 }
 
 let currentShading = "with_data";
@@ -226,6 +246,8 @@ function buildLegend() {
 
 // ---------- Toolbar / overlays ----------
 function wireToolbar() {
+  const clearChip = document.getElementById("clear-filter-chip");
+  if (clearChip) clearChip.addEventListener("click", () => clearWardSelection());
   document.getElementById("btn-search").addEventListener("click", () => openOverlay("search-overlay", () => document.getElementById("search-input").focus()));
   document.getElementById("btn-filter").addEventListener("click", () => openOverlay("filter-overlay"));
   document.getElementById("btn-info").addEventListener("click", () => openOverlay("about-overlay"));
@@ -234,7 +256,10 @@ function wireToolbar() {
       e.preventDefault();
       openOverlay("search-overlay", () => document.getElementById("search-input").focus());
     }
-    if (e.key === "Escape") closeAllOverlays();
+    if (e.key === "Escape") {
+      closeAllOverlays();
+      if (selectedWardNo != null || selectedSensorUid != null) clearWardSelection();
+    }
   });
   // Close on background click
   document.querySelectorAll(".overlay").forEach(ov => {
@@ -397,6 +422,7 @@ async function openSensorDetail(uid) {
   if (!s) return;
   selectedSensorUid = uid;
   renderSensors();
+  updateClearFilterChip();
   // If the ward-list is visible, refresh row highlighting without re-rendering the whole panel.
   document.querySelectorAll(".uid-item").forEach(el => {
     el.classList.toggle("selected", el.dataset.uid === uid);
@@ -417,7 +443,7 @@ async function openSensorDetail(uid) {
     ${s.has_data ? sensorChartsHTML() : `<div class="loading">No time-series data for this sensor in the current snapshot.</div>`}
   `;
   panel.hidden = false;
-  if (s.lat != null && s.lng != null) map.panTo([s.lat, s.lng]);
+  if (s.lat != null && s.lng != null) panToLatLngLeftHalf(s.lat, s.lng);
   if (s.has_data) {
     await loadAndRenderSeries(uid);
     wireRangeChips();

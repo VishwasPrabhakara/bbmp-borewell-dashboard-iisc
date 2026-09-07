@@ -260,3 +260,27 @@ button { font-family: inherit; }
   .detail-panel { top: 8px; right: 8px; bottom: 8px; width: calc(100vw - 16px); }
   .overlay { padding: 40px 12px 20px; }
 }
+
+
+/* Floating "Clear selection" chip, top-center of map, appears only when a ward/sensor is selected */
+.clear-filter-chip {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 500;
+  background: #f59e0b;
+  color: #1f2937;
+  border: none;
+  border-radius: 999px;
+  padding: 8px 18px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+  transition: filter 0.15s, transform 0.15s;
+  display: inline-flex;
+  align-items: center;
+}
+.clear-filter-chip:hover { filter: brightness(1.05); transform: translateX(-50%) translateY(-1px); }
+.clear-filter-chip svg { fill: currentColor; }
