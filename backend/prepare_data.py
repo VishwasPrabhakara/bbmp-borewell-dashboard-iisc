@@ -29,6 +29,13 @@ from pathlib import Path
 import shapefile
 from openpyxl import load_workbook
 
+# KH marks pump-run boundaries with cell fill colours in col A of the .xlsx.
+# Blue-tinted row = pump-START, red-tinted row = pump-STOP.
+# Ported from bbmp_analysis/pass2_parse_ward.py.
+KH_START_FILLS = {"FFDCE6F5", "DCE6F5"}
+KH_END_FILLS   = {"FFFBE0DE", "FBE0DE"}
+KH_JUMP_FT     = 20.0  # KH sensor re-lock rule
+
 
 CONFIG = {
     "wards_zip": os.environ.get("WARDS_ZIP", "bbmpwards.zip"),
@@ -186,12 +193,90 @@ def uid_from_filename(name):
     return m.group(1) if m else None
 
 
+def _kh_sessions(times, water, flow, yield_):
+    """KH's official session-boundary rule (Table 3 method sheet):
+
+      A new pumping session begins where cumulative yield decreases from the
+      previous row (counter resets at pump start), OR where the gap between
+      consecutive timestamps exceeds 30 minutes.
+
+    Then flag each session against the 4 KH quality rules:
+      too_few_samples    n_samples < 3
+      no_volume          cumulative yield did not advance across the session
+      sensor_relock_jump any single-sample |water_ft step| > 20
+      net_level_rise     ended shallower than it started
+    """
+    n = len(times)
+    if n < 2:
+        return []
+    # Boundary points that start a new session.
+    boundaries = [0]
+    for k in range(1, n):
+        gap_min = (times[k] - times[k - 1]).total_seconds() / 60
+        yield_reset = (
+            yield_[k] is not None and yield_[k - 1] is not None
+            and yield_[k] < yield_[k - 1] - 0.01
+        )
+        if yield_reset or gap_min > 30:
+            boundaries.append(k)
+    boundaries.append(n)
+
+    out = []
+    for b in range(len(boundaries) - 1):
+        a, e = boundaries[b], boundaries[b + 1] - 1
+        n_samples = e - a + 1
+        if n_samples < 2:
+            # A single-row orphan record: still surface it, flagged.
+            out.append({
+                "start": a, "stop": e, "n": n_samples,
+                "drawdown_ft": None, "pumped_kl": None, "max_step_ft": None,
+                "usable": False, "reasons": ["too_few_samples"],
+            })
+            continue
+        if water[a] is None or water[e] is None:
+            continue
+        max_step = 0.0
+        for k in range(a + 1, e + 1):
+            if water[k] is not None and water[k - 1] is not None:
+                step = abs(water[k] - water[k - 1])
+                if step > max_step:
+                    max_step = step
+        drawdown = water[e] - water[a]
+        pumped = (
+            yield_[e] - yield_[a]
+            if yield_[a] is not None and yield_[e] is not None
+            else None
+        )
+        reasons = []
+        if n_samples < 3:                 reasons.append("too_few_samples")
+        # `no_volume` intentionally disabled: KH confirmed (Sep 2026) that on the
+        # older device software the water-yield values were logged into a
+        # different table and never merged into the exported sheet. They are
+        # merging back historical yield and will re-share. Until then a session
+        # with a clean level trace but flat yield should NOT be treated as bad.
+        # if pumped is None or pumped <= 0: reasons.append("no_volume")
+        if max_step > KH_JUMP_FT:         reasons.append("sensor_relock_jump")
+        if drawdown <= 0:                 reasons.append("net_level_rise")
+        out.append({
+            "start": a, "stop": e, "n": n_samples,
+            "drawdown_ft": round(drawdown, 2),
+            "pumped_kl": round(pumped, 2) if pumped is not None else None,
+            "max_step_ft": round(max_step, 2),
+            "usable": not reasons,
+            "reasons": reasons,
+        })
+    return out
+
+
 def parse_kh_file(name, raw_bytes):
+    """Parse one KH .xlsx into rows + KH-official sessions. read_only mode is
+    fast because we no longer need cell fills (KH's boundary rule is purely
+    data-based: yield-reset OR >30 min gap)."""
     wb = load_workbook(io.BytesIO(raw_bytes), data_only=True, read_only=True)
     ws = wb[wb.sheetnames[0]]
     rows_iter = ws.iter_rows()
     meta_row = next(rows_iter, None)
-    header_row = next(rows_iter, None)
+    _header_row = next(rows_iter, None)
     meta = parse_meta_row(meta_row) if meta_row else {}
     uid = meta.get("uid", uid_from_filename(name))
     lat = parse_number(meta.get("lat"))
@@ -203,17 +288,16 @@ def parse_kh_file(name, raw_bytes):
         when = parse_ts(vals[0] if len(vals) > 0 else None)
         if not when:
             continue
-        wl = parse_number(vals[1] if len(vals) > 1 else None)
-        fl = parse_number(vals[2] if len(vals) > 2 else None)
-        cy = parse_number(vals[3] if len(vals) > 3 else None)
         times.append(when)
-        water.append(wl)
-        flow.append(fl)
-        yield_.append(cy)
+        water.append(parse_number(vals[1] if len(vals) > 1 else None))
+        flow.append(parse_number(vals[2] if len(vals) > 2 else None))
+        yield_.append(parse_number(vals[3] if len(vals) > 3 else None))
     wb.close()
 
     if not times:
         return {"uid": uid, "lat": lat, "lng": lng, "n": 0}
+
+    sessions = _kh_sessions(times, water, flow, yield_)
     return {
         "uid": uid,
         "lat": lat,
@@ -222,6 +306,7 @@ def parse_kh_file(name, raw_bytes):
         "water_ft": water,
         "flow_lpm": flow,
         "yield_kl": yield_,
+        "sessions": sessions,
         "first": min(times),
         "last": max(times),
         "n": len(times),
@@ -279,7 +364,7 @@ def main():
         }
     print(f"  {len(pop_by_ward)} wards with population data")
 
-    print("Parsing KH ZIP (this can take ~2 min)...")
+    print("Parsing KH ZIP with KH-official session detection (yield-reset + 30 min gap)...")
     zip_sensor_data = {}
     with zipfile.ZipFile(CONFIG["kh_zip"]) as z:
         names = [n for n in z.namelist() if n.lower().endswith(".xlsx")]
@@ -368,6 +453,7 @@ def main():
             "water_ft": z_["water_ft"],
             "flow_lpm": z_["flow_lpm"],
             "yield_kl": z_["yield_kl"],
+            "sessions": z_.get("sessions", []),
         }
         with open(out_dir / "sensor_series" / f"{uid}.json", "w") as f:
             json.dump(series, f)
