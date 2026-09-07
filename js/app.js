@@ -191,7 +191,7 @@ function renderWards() {
       const tip = `
         <div class="name">Ward ${p.ward_no} — ${p.ward_name}</div>
         <div class="kv">Sensors with data: <b>${p.sensor_with_data || 0}</b> / ${p.sensor_total || 0}</div>
-        <div class="kv">Population: ${p.population ? Math.round(p.population).toLocaleString("en-IN") : "—"}</div>
+        <div class="kv">Population (2026 proj): ${p.population_2026 ? Math.round(p.population_2026).toLocaleString("en-IN") : "—"}</div>
         <div class="kv">Area: ${p.area_km2 ? p.area_km2.toFixed(1) + " km²" : "—"}</div>
       `;
       layer.bindTooltip(tip, { className: "ward-tip", sticky: true, direction: "auto" });

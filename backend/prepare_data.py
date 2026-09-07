@@ -34,8 +34,8 @@ CONFIG = {
     "wards_zip": os.environ.get("WARDS_ZIP", "bbmpwards.zip"),
     "population_xlsx": os.environ.get("POPULATION_XLSX", "population_source.xlsx"),
     "kh_zip": os.environ.get("KH_ZIP", "borewell_water_level_200826.zip"),
-    "sensors_db_json": os.environ.get("SENSORS_DB_JSON", "sensors_db.json"),
-    "out_dir": os.environ.get("OUT_DIR", "data"),
+    "sensors_db_json": os.environ.get("SENSORS_DB_JSON", str(Path(__file__).resolve().parent.parent / "data" / "sensors_db.json")),
+    "out_dir": os.environ.get("OUT_DIR", str(Path(__file__).resolve().parent.parent / "data")),
 }
 
 
