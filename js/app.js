@@ -90,6 +90,8 @@ function clearWardSelection() {
   document.getElementById("detail").hidden = true;
   buildLegend();
   updateClearFilterChip();
+  // Zoom back to the whole city view.
+  map.setView([12.972, 77.594], 11, { animate: true });
 }
 
 let currentShading = "with_data";
@@ -440,12 +442,16 @@ async function openSensorDetail(uid) {
       <div class="stat-card"><div class="stat-label">First reading</div><div class="stat-value small">${fmtDate(s.first_data_at)}</div></div>
       <div class="stat-card"><div class="stat-label">Last reading</div><div class="stat-value small">${fmtDate(s.last_data_at)}</div></div>
     </div>
+    ${s.has_data ? '<div id="session-stats-card" class="session-stats-card">Computing session quality…</div>' : ""}
     ${s.has_data ? sensorChartsHTML() : `<div class="loading">No time-series data for this sensor in the current snapshot.</div>`}
   `;
   panel.hidden = false;
-  if (s.lat != null && s.lng != null) panToLatLngLeftHalf(s.lat, s.lng);
+  // If the sensor was clicked without a ward context, zoom in to it (like a ward selection).
+  const targetZoom = selectedWardNo == null ? 16 : null;
+  if (s.lat != null && s.lng != null) panToLatLngLeftHalf(s.lat, s.lng, targetZoom);
   if (s.has_data) {
     await loadAndRenderSeries(uid);
+    renderSessionStatsCard();
     wireRangeChips();
   }
 }
@@ -470,6 +476,96 @@ function sensorChartsHTML() {
   `;
 }
 
+// ============================================================
+// KH session detection + filter (client-side port of pass2_parse_ward.py)
+// ============================================================
+// A "session" = contiguous run of samples with time gaps <= MAX_GAP_MIN
+// and cumulative-yield monotonic non-decreasing (a big drop = pump reset).
+// Each session is classified USABLE / UNUSABLE per KH rules:
+//   - too_few_samples : n_samples < 3
+//   - no_volume       : cumulative yield did not increase
+//   - sensor_relock_jump : any consecutive |water_ft step| > 20 ft
+//   - net_level_rise  : stop level <= start level (water rose, not drew down)
+const MAX_SESSION_GAP_MIN = 30;
+const JUMP_THRESHOLD_FT   = 20.0;
+const CUM_RESET_TOL_KL    = 0.01;
+
+function computeSessions(series) {
+  if (!series || !series.times || series.times.length < 2) return [];
+  const times = series.times.map(t => new Date(t));
+  const wl = series.water_ft, fl = series.flow_lpm, cy = series.yield_kl;
+  const boundaries = [0];
+  for (let i = 1; i < times.length; i++) {
+    const gap = (times[i] - times[i - 1]) / 60000;
+    const cumReset = (cy[i] != null && cy[i - 1] != null && cy[i] < cy[i - 1] - CUM_RESET_TOL_KL);
+    if (gap > MAX_SESSION_GAP_MIN || cumReset) boundaries.push(i);
+  }
+  boundaries.push(times.length);
+  const out = [];
+  for (let b = 0; b < boundaries.length - 1; b++) {
+    const from = boundaries[b], to = boundaries[b + 1];
+    if (to - from < 2) continue;
+    const idx = [];
+    for (let i = from; i < to; i++) idx.push(i);
+    const startLevel = wl[from], stopLevel = wl[to - 1];
+    if (startLevel == null || stopLevel == null) continue;
+    let maxStep = 0;
+    for (let i = from + 1; i < to; i++) {
+      if (wl[i] != null && wl[i - 1] != null) {
+        const step = Math.abs(wl[i] - wl[i - 1]);
+        if (step > maxStep) maxStep = step;
+      }
+    }
+    const startY = cy[from], stopY = cy[to - 1];
+    const pumped = (startY != null && stopY != null) ? stopY - startY : null;
+    const reasons = [];
+    if (idx.length < 3) reasons.push("too_few_samples");
+    if (pumped == null || pumped <= 0) reasons.push("no_volume");
+    if (maxStep > JUMP_THRESHOLD_FT) reasons.push("sensor_relock_jump");
+    if ((stopLevel - startLevel) <= 0) reasons.push("net_level_rise");
+    out.push({
+      startIdx: from, stopIdx: to - 1, idx,
+      startTime: times[from], stopTime: times[to - 1],
+      nSamples: idx.length,
+      drawdownFt: stopLevel - startLevel,
+      pumpedKl: pumped,
+      maxStepFt: maxStep,
+      usable: reasons.length === 0,
+      reasons,
+    });
+  }
+  return out;
+}
+
+function sessionCoverage(sessions, seriesLen) {
+  // Return a Uint8Array where 1 = point belongs to a USABLE session, 2 = UNUSABLE session, 0 = between sessions.
+  const cover = new Uint8Array(seriesLen);
+  for (const sess of sessions) {
+    const tag = sess.usable ? 1 : 2;
+    for (const i of sess.idx) cover[i] = tag;
+  }
+  return cover;
+}
+
+function summarizeSessions(sessions) {
+  const total = sessions.length;
+  const kept  = sessions.filter(s => s.usable).length;
+  const dropped = total - kept;
+  const byReason = {};
+  for (const s of sessions) {
+    if (s.usable) continue;
+    for (const r of s.reasons) byReason[r] = (byReason[r] || 0) + 1;
+  }
+  return { total, kept, dropped, byReason };
+}
+
+const REASON_LABEL = {
+  too_few_samples:    "&lt;3 samples",
+  no_volume:          "no pumped volume",
+  sensor_relock_jump: "sensor re-lock (&gt;20 ft jump)",
+  net_level_rise:     "water rose, not drew down",
+};
+
 async function loadAndRenderSeries(uid) {
   const res = await fetch(seriesUrlOf(uid));
   if (!res.ok) return;
@@ -480,47 +576,89 @@ async function loadAndRenderSeries(uid) {
 
 function filteredSeries(range) {
   const s = currentSensorSeries;
-  if (!s) return { times: [], water: [], flow: [] };
+  if (!s) return { times: [], water: [], flow: [], cover: [] };
   const times = s.times.map(t => new Date(t));
   const last = times.length ? times[times.length - 1] : new Date();
   let from = null;
   if (range === "1W") from = new Date(last.getTime() - 7 * 86400000);
   else if (range === "1M") from = new Date(last.getTime() - 30 * 86400000);
   else if (range === "3M") from = new Date(last.getTime() - 90 * 86400000);
-  const out = { times: [], water: [], flow: [] };
+  const sessions = computeSessions(s);
+  const cover = sessionCoverage(sessions, s.times.length);
+  const out = { times: [], water: [], flow: [], cover: [] };
   for (let i = 0; i < times.length; i++) {
     if (from && times[i] < from) continue;
     out.times.push(times[i]);
     out.water.push(s.water_ft[i]);
     out.flow.push(s.flow_lpm[i]);
+    out.cover.push(cover[i]);
   }
   return out;
+}
+
+function splitByCover(times, values, cover) {
+  // Returns two arrays aligned with `times`, where non-matching points are null (creates gaps in Chart.js).
+  const kept = times.map((_, i) => (cover[i] === 1 ? values[i] : null));
+  const drop = times.map((_, i) => (cover[i] === 2 ? values[i] : null));
+  return { kept, drop };
 }
 
 function drawCharts() {
   if (charts.water) charts.water.destroy();
   if (charts.discharge) charts.discharge.destroy();
   const d = filteredSeries(currentRange);
+  const w = splitByCover(d.times, d.water, d.cover);
+  const f = splitByCover(d.times, d.flow, d.cover);
   const commonOpts = {
     responsive: true, maintainAspectRatio: false, animation: { duration: 250 },
     interaction: { mode: "nearest", intersect: false },
-    plugins: { legend: { display: false }, tooltip: { backgroundColor: "rgba(11,61,76,0.95)" } },
+    plugins: {
+      legend: { display: true, position: "top", labels: { boxWidth: 12, boxHeight: 4, font: { size: 11 }, color: "#5a6472" } },
+      tooltip: { backgroundColor: "rgba(11,61,76,0.95)" },
+    },
     scales: {
       x: { type: "time", time: { tooltipFormat: "dd MMM HH:mm" }, ticks: { color: "#5a6472" }, grid: { display: false } },
       y: { ticks: { color: "#5a6472" }, grid: { color: "#eef2f5" } },
     },
     elements: { point: { radius: 0 }, line: { borderWidth: 1.6 } },
+    spanGaps: false,
   };
+  const keptWater = { label: "Kept (usable session)", data: w.kept, borderColor: "#0e7490", backgroundColor: "rgba(14,116,144,0.10)", fill: false, tension: 0.15 };
+  const dropWater = { label: "Filtered out", data: w.drop, borderColor: "#94a3b8", borderDash: [4, 4], backgroundColor: "transparent", fill: false, tension: 0.15 };
+  const keptFlow  = { label: "Kept (usable session)", data: f.kept, borderColor: "#0891b2", backgroundColor: "rgba(8,145,178,0.10)", fill: false, tension: 0.1 };
+  const dropFlow  = { label: "Filtered out", data: f.drop, borderColor: "#94a3b8", borderDash: [4, 4], backgroundColor: "transparent", fill: false, tension: 0.1 };
   charts.water = new Chart(document.getElementById("chart-water"), {
     type: "line",
-    data: { labels: d.times, datasets: [{ data: d.water, borderColor: "#1e3a8a", backgroundColor: "rgba(30,58,138,0.08)", fill: true, tension: 0.15 }] },
+    data: { labels: d.times, datasets: [keptWater, dropWater] },
     options: { ...commonOpts, scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, title: { display: true, text: "ft below surface", color: "#5a6472" } } } },
   });
   charts.discharge = new Chart(document.getElementById("chart-discharge"), {
     type: "line",
-    data: { labels: d.times, datasets: [{ data: d.flow, borderColor: "#0891b2", backgroundColor: "rgba(8,145,178,0.08)", fill: true, tension: 0.1 }] },
+    data: { labels: d.times, datasets: [keptFlow, dropFlow] },
     options: { ...commonOpts, scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, title: { display: true, text: "L/min", color: "#5a6472" } } } },
   });
+}
+
+function renderSessionStatsCard() {
+  const el = document.getElementById("session-stats-card");
+  if (!el || !currentSensorSeries) return;
+  const sessions = computeSessions(currentSensorSeries);
+  const stats = summarizeSessions(sessions);
+  const reasonRows = Object.entries(stats.byReason)
+    .sort((a, b) => b[1] - a[1])
+    .map(([r, n]) => `<div class="reason-row"><span>${REASON_LABEL[r] || r}</span><span class="reason-count">${n}</span></div>`)
+    .join("");
+  el.innerHTML = `
+    <div class="session-stats-head">
+      <span class="stats-title">Session quality (KH filter rules)</span>
+    </div>
+    <div class="session-stats-grid">
+      <div class="ss-tile"><div class="ss-num">${stats.total}</div><div class="ss-lbl">total sessions</div></div>
+      <div class="ss-tile ok"><div class="ss-num">${stats.kept}</div><div class="ss-lbl">kept</div></div>
+      <div class="ss-tile bad"><div class="ss-num">${stats.dropped}</div><div class="ss-lbl">filtered out</div></div>
+    </div>
+    ${reasonRows ? `<div class="reason-list">${reasonRows}</div>` : ""}
+  `;
 }
 
 function wireRangeChips() {
