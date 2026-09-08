@@ -247,16 +247,16 @@ def _kh_sessions(times, water, flow, yield_):
             if yield_[a] is not None and yield_[e] is not None
             else None
         )
+        # KH filter DISABLED entirely (Sep 2026) — KH is re-sharing the full
+        # dataset with merged historical yield in the next few days; only then
+        # will these rules produce trustworthy numbers. For now every session
+        # is emitted as usable so the dashboard shows the raw pump-run data
+        # without any drop labels. Re-enable by uncommenting these checks.
         reasons = []
-        if n_samples < 3:                 reasons.append("too_few_samples")
-        # `no_volume` intentionally disabled: KH confirmed (Sep 2026) that on the
-        # older device software the water-yield values were logged into a
-        # different table and never merged into the exported sheet. They are
-        # merging back historical yield and will re-share. Until then a session
-        # with a clean level trace but flat yield should NOT be treated as bad.
+        # if n_samples < 3:                 reasons.append("too_few_samples")
         # if pumped is None or pumped <= 0: reasons.append("no_volume")
-        if max_step > KH_JUMP_FT:         reasons.append("sensor_relock_jump")
-        if drawdown <= 0:                 reasons.append("net_level_rise")
+        # if max_step > KH_JUMP_FT:         reasons.append("sensor_relock_jump")
+        # if drawdown <= 0:                 reasons.append("net_level_rise")
         out.append({
             "start": a, "stop": e, "n": n_samples,
             "drawdown_ft": round(drawdown, 2),

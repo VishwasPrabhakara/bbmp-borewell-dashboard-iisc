@@ -492,6 +492,25 @@ const CUM_RESET_TOL_KL    = 0.01;
 
 function computeSessions(series) {
   if (!series || !series.times || series.times.length < 2) return [];
+  // Prefer server-side KH sessions (fill-colour marked) if they were emitted
+  // by prepare_data.py. Fall back to the time-gap heuristic only when absent.
+  if (Array.isArray(series.sessions) && series.sessions.length > 0) {
+    const times = series.times.map(t => new Date(t));
+    return series.sessions.map(ss => {
+      const idx = [];
+      for (let i = ss.start; i <= ss.stop; i++) idx.push(i);
+      return {
+        startIdx: ss.start, stopIdx: ss.stop, idx,
+        startTime: times[ss.start], stopTime: times[ss.stop],
+        nSamples: ss.n,
+        drawdownFt: ss.drawdown_ft,
+        pumpedKl: ss.pumped_kl,
+        maxStepFt: ss.max_step_ft,
+        usable: ss.usable,
+        reasons: ss.reasons || [],
+      };
+    });
+  }
   const times = series.times.map(t => new Date(t));
   const wl = series.water_ft, fl = series.flow_lpm, cy = series.yield_kl;
   const boundaries = [0];
@@ -613,7 +632,7 @@ function drawCharts() {
     responsive: true, maintainAspectRatio: false, animation: { duration: 250 },
     interaction: { mode: "nearest", intersect: false },
     plugins: {
-      legend: { display: true, position: "top", labels: { boxWidth: 12, boxHeight: 4, font: { size: 11 }, color: "#5a6472" } },
+      legend: { display: false, position: "top", labels: { boxWidth: 12, boxHeight: 4, font: { size: 11 }, color: "#5a6472" } },
       tooltip: { backgroundColor: "rgba(11,61,76,0.95)" },
     },
     scales: {
@@ -623,18 +642,21 @@ function drawCharts() {
     elements: { point: { radius: 0 }, line: { borderWidth: 1.6 } },
     spanGaps: false,
   };
-  const keptWater = { label: "Kept (usable session)", data: w.kept, borderColor: "#0e7490", backgroundColor: "rgba(14,116,144,0.10)", fill: false, tension: 0.15 };
+  const anyDropped = d.cover.some(c => c === 2);
+  const keptWater = { label: anyDropped ? "Kept (usable session)" : "Water level", data: anyDropped ? w.kept : d.water, borderColor: "#0e7490", backgroundColor: "rgba(14,116,144,0.10)", fill: !anyDropped, tension: 0.15 };
   const dropWater = { label: "Filtered out", data: w.drop, borderColor: "#94a3b8", borderDash: [4, 4], backgroundColor: "transparent", fill: false, tension: 0.15 };
-  const keptFlow  = { label: "Kept (usable session)", data: f.kept, borderColor: "#0891b2", backgroundColor: "rgba(8,145,178,0.10)", fill: false, tension: 0.1 };
+  const keptFlow  = { label: anyDropped ? "Kept (usable session)" : "Discharge", data: anyDropped ? f.kept : d.flow, borderColor: "#0891b2", backgroundColor: "rgba(8,145,178,0.10)", fill: !anyDropped, tension: 0.1 };
   const dropFlow  = { label: "Filtered out", data: f.drop, borderColor: "#94a3b8", borderDash: [4, 4], backgroundColor: "transparent", fill: false, tension: 0.1 };
+  const waterDs = anyDropped ? [keptWater, dropWater] : [keptWater];
+  const flowDs  = anyDropped ? [keptFlow,  dropFlow]  : [keptFlow];
   charts.water = new Chart(document.getElementById("chart-water"), {
     type: "line",
-    data: { labels: d.times, datasets: [keptWater, dropWater] },
+    data: { labels: d.times, datasets: waterDs },
     options: { ...commonOpts, scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, title: { display: true, text: "ft below surface", color: "#5a6472" } } } },
   });
   charts.discharge = new Chart(document.getElementById("chart-discharge"), {
     type: "line",
-    data: { labels: d.times, datasets: [keptFlow, dropFlow] },
+    data: { labels: d.times, datasets: flowDs },
     options: { ...commonOpts, scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, title: { display: true, text: "L/min", color: "#5a6472" } } } },
   });
 }
@@ -644,6 +666,10 @@ function renderSessionStatsCard() {
   if (!el || !currentSensorSeries) return;
   const sessions = computeSessions(currentSensorSeries);
   const stats = summarizeSessions(sessions);
+  // KH filtering paused until KH ships the merged-yield dataset — hide the
+  // quality card entirely if nothing is being filtered.
+  if (stats.dropped === 0) { el.hidden = true; return; }
+  el.hidden = false;
   const reasonRows = Object.entries(stats.byReason)
     .sort((a, b) => b[1] - a[1])
     .map(([r, n]) => `<div class="reason-row"><span>${REASON_LABEL[r] || r}</span><span class="reason-count">${n}</span></div>`)
