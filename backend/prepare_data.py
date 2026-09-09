@@ -226,12 +226,8 @@ def _kh_sessions(times, water, flow, yield_):
         a, e = boundaries[b], boundaries[b + 1] - 1
         n_samples = e - a + 1
         if n_samples < 2:
-            # A single-row orphan record: still surface it, flagged.
-            out.append({
-                "start": a, "stop": e, "n": n_samples,
-                "drawdown_ft": None, "pumped_kl": None, "max_step_ft": None,
-                "usable": False, "reasons": ["too_few_samples"],
-            })
+            # Single-row orphan: skip entirely while KH filter is paused (would
+            # otherwise force-flag as too_few_samples, contradicting the pause).
             continue
         if water[a] is None or water[e] is None:
             continue
