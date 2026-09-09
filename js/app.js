@@ -394,7 +394,7 @@ function openWardDetail(p, feat) {
     <div class="stat-grid">
       <div class="stat-card"><div class="stat-label">Sensors with data</div><div class="stat-value">${withData}</div><div class="stat-sub">out of ${list.length} total</div></div>
       <div class="stat-card"><div class="stat-label">Area</div><div class="stat-value small">${p.area_km2 ? p.area_km2.toFixed(2) + " km²" : "—"}</div></div>
-      <div class="stat-card"><div class="stat-label">Rainfall (last 12 mo)</div><div class="stat-value small">${fmtMm(p.rainfall_mm_annual)}</div><div class="stat-sub">KWRIS + KSNDMC · <a href="#" data-download-rain="${p.ward_no}">Download</a></div></div>
+<!-- Rainfall stat card hidden until KWRIS+KSNDMC pipeline is finalised. Re-enable by restoring this line. -->
       <div class="stat-card"><div class="stat-label">Population 2001</div><div class="stat-value small">${fmtInt(p.population_2001)}</div><div class="stat-sub">Census</div></div>
       <div class="stat-card"><div class="stat-label">Population 2011</div><div class="stat-value small">${fmtInt(p.population_2011)}</div><div class="stat-sub">Census</div></div>
       <div class="stat-card"><div class="stat-label">Projected 2026</div><div class="stat-value small">${fmtInt(p.population_2026)}</div><div class="stat-sub">CAGR from 2001–10</div></div>
