@@ -225,9 +225,7 @@ def _kh_sessions(times, water, flow, yield_):
     for b in range(len(boundaries) - 1):
         a, e = boundaries[b], boundaries[b + 1] - 1
         n_samples = e - a + 1
-        if n_samples < 2:
-            # Single-row orphan: skip entirely while KH filter is paused (would
-            # otherwise force-flag as too_few_samples, contradicting the pause).
+        if n_samples < 1:
             continue
         if water[a] is None or water[e] is None:
             continue
@@ -249,10 +247,10 @@ def _kh_sessions(times, water, flow, yield_):
         # is emitted as usable so the dashboard shows the raw pump-run data
         # without any drop labels. Re-enable by uncommenting these checks.
         reasons = []
-        # if n_samples < 3:                 reasons.append("too_few_samples")
-        # if pumped is None or pumped <= 0: reasons.append("no_volume")
-        # if max_step > KH_JUMP_FT:         reasons.append("sensor_relock_jump")
-        # if drawdown <= 0:                 reasons.append("net_level_rise")
+        if n_samples < 3:                 reasons.append("too_few_samples")
+        if pumped is None or pumped <= 0: reasons.append("no_volume")
+        if max_step > KH_JUMP_FT:         reasons.append("sensor_relock_jump")
+        if drawdown <= 0:                 reasons.append("net_level_rise")
         out.append({
             "start": a, "stop": e, "n": n_samples,
             "drawdown_ft": round(drawdown, 2),

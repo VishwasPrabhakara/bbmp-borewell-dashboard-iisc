@@ -1,1 +1,1 @@
-{"uid": "865931087414280", "unit_water": "ft below surface", "unit_flow": "L/min", "unit_yield": "KL", "times": ["2026-07-18T10:58:49"], "water_ft": [30.1], "flow_lpm": [0.0], "yield_kl": [0.0], "sessions": []}
+{"uid": "865931087414280", "unit_water": "ft below surface", "unit_flow": "L/min", "unit_yield": "KL", "times": ["2026-07-18T10:58:49"], "water_ft": [30.1], "flow_lpm": [43.27], "yield_kl": [0.01], "sessions": []}
