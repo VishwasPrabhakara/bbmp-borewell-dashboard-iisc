@@ -74,16 +74,45 @@ The static mode has zero moving parts and is fine while total data stays under a
 
 `backend/prepare_data.py` orchestrates all of the above and writes the JSON files under `data/`.
 
-## KH filtering rules (matches the Ward-25 PPT)
+## Session quality and dashboard inclusion
 
-A pump *session* = one blue-start row to the next red-end row in a KH .xlsx. A session is treated as **usable** when all four hold:
+Sessions start at any cumulative-yield decrease or a time gap above 30 minutes.
+All readings and sessions are retained, including single-reading sessions and
+sessions with missing water-level endpoints. The four KH flags are fewer than
+3 readings, no yield advance, a water-level step above 20 ft, and negative
+endpoint drawdown. Zero drawdown is not a net level rise. Missing water/yield
+readings are additional dashboard checks.
 
-1. ≥ 3 water-level readings inside the session
-2. cumulative water yield actually increased (some volume was pumped)
-3. no sensor re-lock: no water-level jump > 20 ft between consecutive samples
-4. no net level rise: stop level deeper than start (positive drawdown)
+The following inclusion policy is our dashboard interpretation, not a claim
+that KH deletes these sessions:
 
-`prepare_data.py` exports the raw per-UID time series. Session-usability filtering is applied downstream by analysis scripts and by the dashboard's future forecasting features. If you want the sensor-detail chart to visually hide unusable sessions, ask — it's ~30 lines of frontend code.
+- **OK**: no quality flags.
+- **Flagged**: requires review, including possible re-lock and net level rise.
+- **Excluded from default analysis**: fewer than 3 readings, missing/nonpositive
+  endpoint volume, or missing endpoint water level. Still visible and downloadable.
+
+Eligibility is separate from status. Volume requires at least two readings,
+complete yield readings and positive yield advance. Drawdown requires at least
+three readings, complete levels, no >20 ft jump and positive endpoint drawdown.
+Specific-capacity eligibility requires both. An excluded two-reading session can
+still have measurable volume. Eligibility is a screening decision, not calibration
+or proof that a sensor measurement is accurate. No automatic corrections occur.
+
+The sensor table lists every session, reasons, observed values and eligible
+calculations, with pagination and CSV download. All retained sessions are shown
+initially; the selector can show OK only, flagged only, or excluded only in the
+table and charts. Counts cover the full history; chart range buttons only limit
+chart dates. Chart colours indicate session status. Discharge comes directly
+from flow_lpm, not water level or yield differences; flow accuracy is not separately
+validated. Yield-counter problems do not establish that discharge is zero.
+
+`backend/session_quality.py` is the versioned policy shared by the build and the
+JSON refresh. `js/session-quality.js` provides a tested equivalent fallback for
+older data/API responses. Backend annotations take precedence at matching version.
+Run `python backend/refresh_session_quality.py` to refresh the existing snapshot
+without rereading the Excel ZIP. It verifies raw arrays remain unchanged and writes
+`data/session_quality_summary.json`. Run `python backend/test_session_quality.py`
+for policy and backend/browser parity tests.
 
 ## Dashboard behaviour
 

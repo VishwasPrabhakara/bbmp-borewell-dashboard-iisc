@@ -451,6 +451,7 @@ async function openSensorDetail(uid) {
   if (s.lat != null && s.lng != null) panToLatLngLeftHalf(s.lat, s.lng, targetZoom);
   if (s.has_data) {
     await loadAndRenderSeries(uid);
+    if (selectedSensorUid !== uid) return;
     renderSessionStatsCard();
     wireRangeChips();
   }
@@ -468,7 +469,7 @@ function sensorChartsHTML() {
     </div>
     <div class="chart-block">
       <div class="chart-header">
-        <div class="chart-title">Discharge (L/min)</div>
+        <div class="chart-title">Recorded discharge (L/min)</div>
         <div class="chart-actions">${chips}<button class="expand-btn" data-expand="discharge" title="Expand">⤢</button></div>
       </div>
       <div class="chart-canvas-wrap"><canvas id="chart-discharge"></canvas></div>
@@ -477,118 +478,54 @@ function sensorChartsHTML() {
 }
 
 // ============================================================
-// KH session detection + filter (client-side port of pass2_parse_ward.py)
-// ============================================================
-// A "session" = contiguous run of samples with time gaps <= MAX_GAP_MIN
-// and cumulative-yield monotonic non-decreasing (a big drop = pump reset).
-// Each session is classified USABLE / UNUSABLE per KH rules:
-//   - too_few_samples : n_samples < 3
-//   - no_volume       : cumulative yield did not increase
-//   - sensor_relock_jump : any consecutive |water_ft step| > 20 ft
-//   - net_level_rise  : stop level <= start level (water rose, not drew down)
-const MAX_SESSION_GAP_MIN = 30;
-const JUMP_THRESHOLD_FT   = 20.0;
-const CUM_RESET_TOL_KL    = 0.01;
-
+// Backend annotations are authoritative for the current policy version.
+const sessionCache = new WeakMap();
+let qualityFilter = "all";
+let sessionPage = 0;
+const REASON_LABEL = {
+  too_few_samples: "Fewer than 3 readings",
+  no_volume: "Yield counter did not advance",
+  sensor_relock_jump: "Water-level jump above 20 ft (possible sensor re-lock)",
+  net_level_rise: "Ended shallower than it started",
+  missing_water_level: "Missing water-level readings",
+  missing_yield: "Missing yield readings",
+};
 function computeSessions(series) {
-  if (!series || !series.times || series.times.length < 2) return [];
-  // Prefer server-side KH sessions (fill-colour marked) if they were emitted
-  // by prepare_data.py. Fall back to the time-gap heuristic only when absent.
-  if (Array.isArray(series.sessions) && series.sessions.length > 0) {
-    const times = series.times.map(t => new Date(t));
-    return series.sessions.map(ss => {
-      const idx = [];
-      for (let i = ss.start; i <= ss.stop; i++) idx.push(i);
-      return {
-        startIdx: ss.start, stopIdx: ss.stop, idx,
-        startTime: times[ss.start], stopTime: times[ss.stop],
-        nSamples: ss.n,
-        drawdownFt: ss.drawdown_ft,
-        pumpedKl: ss.pumped_kl,
-        maxStepFt: ss.max_step_ft,
-        usable: ss.usable,
-        reasons: ss.reasons || [],
-      };
-    });
-  }
-  const times = series.times.map(t => new Date(t));
-  const wl = series.water_ft, fl = series.flow_lpm, cy = series.yield_kl;
-  const boundaries = [0];
-  for (let i = 1; i < times.length; i++) {
-    const gap = (times[i] - times[i - 1]) / 60000;
-    const cumReset = (cy[i] != null && cy[i - 1] != null && cy[i] < cy[i - 1] - CUM_RESET_TOL_KL);
-    if (gap > MAX_SESSION_GAP_MIN || cumReset) boundaries.push(i);
-  }
-  boundaries.push(times.length);
-  const out = [];
-  for (let b = 0; b < boundaries.length - 1; b++) {
-    const from = boundaries[b], to = boundaries[b + 1];
-    if (to - from < 2) continue;
-    const idx = [];
-    for (let i = from; i < to; i++) idx.push(i);
-    const startLevel = wl[from], stopLevel = wl[to - 1];
-    if (startLevel == null || stopLevel == null) continue;
-    let maxStep = 0;
-    for (let i = from + 1; i < to; i++) {
-      if (wl[i] != null && wl[i - 1] != null) {
-        const step = Math.abs(wl[i] - wl[i - 1]);
-        if (step > maxStep) maxStep = step;
-      }
-    }
-    const startY = cy[from], stopY = cy[to - 1];
-    const pumped = (startY != null && stopY != null) ? stopY - startY : null;
-    const reasons = [];
-    if (idx.length < 3) reasons.push("too_few_samples");
-    if (pumped == null || pumped <= 0) reasons.push("no_volume");
-    if (maxStep > JUMP_THRESHOLD_FT) reasons.push("sensor_relock_jump");
-    if ((stopLevel - startLevel) <= 0) reasons.push("net_level_rise");
-    out.push({
-      startIdx: from, stopIdx: to - 1, idx,
-      startTime: times[from], stopTime: times[to - 1],
-      nSamples: idx.length,
-      drawdownFt: stopLevel - startLevel,
-      pumpedKl: pumped,
-      maxStepFt: maxStep,
-      usable: reasons.length === 0,
-      reasons,
-    });
-  }
-  return out;
+  if (!series || !series.times) return [];
+  if (sessionCache.has(series)) return sessionCache.get(series);
+  const raw = series.quality_policy_version === SessionQuality.version && Array.isArray(series.sessions)
+    ? series.sessions : SessionQuality.build(series);
+  const result = raw.map((ss, i) => ({ ...ss, number: i + 1,
+    startIdx: ss.start, stopIdx: ss.stop,
+    startTime: new Date(series.times[ss.start]), stopTime: new Date(series.times[ss.stop]),
+    nSamples: ss.n, drawdownFt: ss.drawdown_ft, pumpedKl: ss.pumped_kl,
+    maxStepFt: ss.max_step_ft,
+  }));
+  sessionCache.set(series, result);
+  return result;
 }
-
 function sessionCoverage(sessions, seriesLen) {
-  // Return a Uint8Array where 1 = point belongs to a USABLE session, 2 = UNUSABLE session, 0 = between sessions.
   const cover = new Uint8Array(seriesLen);
-  for (const sess of sessions) {
-    const tag = sess.usable ? 1 : 2;
-    for (const i of sess.idx) cover[i] = tag;
-  }
+  for (const sess of sessions) cover.fill({ok: 1, flagged: 2, excluded: 3}[sess.status], sess.startIdx, sess.stopIdx + 1);
   return cover;
 }
-
 function summarizeSessions(sessions) {
-  const total = sessions.length;
-  const kept  = sessions.filter(s => s.usable).length;
-  const dropped = total - kept;
-  const byReason = {};
+  const counts = { total: sessions.length, ok: 0, flagged: 0, excluded: 0, byReason: {} };
   for (const s of sessions) {
-    if (s.usable) continue;
-    for (const r of s.reasons) byReason[r] = (byReason[r] || 0) + 1;
+    counts[s.status]++;
+    for (const r of s.reasons) counts.byReason[r] = (counts.byReason[r] || 0) + 1;
   }
-  return { total, kept, dropped, byReason };
+  return counts;
 }
-
-const REASON_LABEL = {
-  too_few_samples:    "&lt;3 samples",
-  no_volume:          "no pumped volume",
-  sensor_relock_jump: "sensor re-lock (&gt;20 ft jump)",
-  net_level_rise:     "water rose, not drew down",
-};
 
 async function loadAndRenderSeries(uid) {
   const res = await fetch(seriesUrlOf(uid));
   if (!res.ok) return;
-  currentSensorSeries = await res.json();
+  const series = await res.json();
+  if (selectedSensorUid !== uid) return;
+  currentSensorSeries = series;
+  qualityFilter = "all";
+  sessionPage = 0;
   currentRange = "1M";
   drawCharts();
 }
@@ -604,35 +541,46 @@ function filteredSeries(range) {
   else if (range === "3M") from = new Date(last.getTime() - 90 * 86400000);
   const sessions = computeSessions(s);
   const cover = sessionCoverage(sessions, s.times.length);
+  const starts = new Set(sessions.map(session => session.startIdx));
   const out = { times: [], water: [], flow: [], cover: [] };
   for (let i = 0; i < times.length; i++) {
     if (from && times[i] < from) continue;
+    if (out.times.length && starts.has(i)) {
+      out.times.push(times[i]); out.water.push(null); out.flow.push(null); out.cover.push(0);
+    }
     out.times.push(times[i]);
-    out.water.push(s.water_ft[i]);
-    out.flow.push(s.flow_lpm[i]);
+    const included = qualityFilter === "all" || cover[i] === {ok: 1, flagged: 2, excluded: 3}[qualityFilter];
+    out.water.push(included ? s.water_ft[i] : null);
+    out.flow.push(included ? s.flow_lpm[i] : null);
     out.cover.push(cover[i]);
   }
   return out;
 }
 
-function splitByCover(times, values, cover) {
-  // Returns two arrays aligned with `times`, where non-matching points are null (creates gaps in Chart.js).
-  const kept = times.map((_, i) => (cover[i] === 1 ? values[i] : null));
-  const drop = times.map((_, i) => (cover[i] === 2 ? values[i] : null));
-  return { kept, drop };
+function qualityDatasets(values, cover) {
+  return [
+    [1, "OK", "#0e7490", []],
+    [2, "Flagged — review", "#d97706", [4, 3]],
+    [3, "Excluded from default analysis", "#94a3b8", [2, 3]],
+  ].map(([tag, label, color, dash]) => ({ label,
+    data: values.map((v, i) => cover[i] === tag ? v : null),
+    borderColor: color, borderDash: dash, fill: false, tension: 0,
+    pointRadius: values.map((v, i) => v != null && cover[i] === tag &&
+      (i === 0 || values[i-1] == null || cover[i-1] !== tag) &&
+      (i === values.length-1 || values[i+1] == null || cover[i+1] !== tag) ? 2 : 0),
+  }));
 }
 
 function drawCharts() {
   if (charts.water) charts.water.destroy();
   if (charts.discharge) charts.discharge.destroy();
   const d = filteredSeries(currentRange);
-  const w = splitByCover(d.times, d.water, d.cover);
-  const f = splitByCover(d.times, d.flow, d.cover);
+
   const commonOpts = {
     responsive: true, maintainAspectRatio: false, animation: { duration: 250 },
     interaction: { mode: "nearest", intersect: false },
     plugins: {
-      legend: { display: false, position: "top", labels: { boxWidth: 12, boxHeight: 4, font: { size: 11 }, color: "#5a6472" } },
+      legend: { display: true, position: "top", labels: { boxWidth: 12, boxHeight: 4, font: { size: 11 }, color: "#5a6472" } },
       tooltip: { backgroundColor: "rgba(11,61,76,0.95)" },
     },
     scales: {
@@ -642,13 +590,8 @@ function drawCharts() {
     elements: { point: { radius: 0 }, line: { borderWidth: 1.6 } },
     spanGaps: false,
   };
-  const anyDropped = d.cover.some(c => c === 2);
-  const keptWater = { label: anyDropped ? "Kept (usable session)" : "Water level", data: anyDropped ? w.kept : d.water, borderColor: "#0e7490", backgroundColor: "rgba(14,116,144,0.10)", fill: !anyDropped, tension: 0.15 };
-  const dropWater = { label: "Filtered out", data: w.drop, borderColor: "#94a3b8", borderDash: [4, 4], backgroundColor: "transparent", fill: false, tension: 0.15 };
-  const keptFlow  = { label: anyDropped ? "Kept (usable session)" : "Discharge", data: anyDropped ? f.kept : d.flow, borderColor: "#0891b2", backgroundColor: "rgba(8,145,178,0.10)", fill: !anyDropped, tension: 0.1 };
-  const dropFlow  = { label: "Filtered out", data: f.drop, borderColor: "#94a3b8", borderDash: [4, 4], backgroundColor: "transparent", fill: false, tension: 0.1 };
-  const waterDs = anyDropped ? [keptWater, dropWater] : [keptWater];
-  const flowDs  = anyDropped ? [keptFlow,  dropFlow]  : [keptFlow];
+  const waterDs = qualityDatasets(d.water, d.cover);
+  const flowDs = qualityDatasets(d.flow, d.cover);
   charts.water = new Chart(document.getElementById("chart-water"), {
     type: "line",
     data: { labels: d.times, datasets: waterDs },
@@ -664,27 +607,40 @@ function drawCharts() {
 function renderSessionStatsCard() {
   const el = document.getElementById("session-stats-card");
   if (!el || !currentSensorSeries) return;
-  const sessions = computeSessions(currentSensorSeries);
-  const stats = summarizeSessions(sessions);
-  // KH filtering paused until KH ships the merged-yield dataset — hide the
-  // quality card entirely if nothing is being filtered.
-  if (stats.dropped === 0) { el.hidden = true; return; }
+  const sessions = computeSessions(currentSensorSeries), stats = summarizeSessions(sessions);
+  const visible = sessions.filter(s => qualityFilter === "all" || s.status === qualityFilter);
+  const pageSize = 25, pages = Math.max(1, Math.ceil(visible.length / pageSize));
+  sessionPage = Math.min(sessionPage, pages - 1);
+  const number = v => v == null ? "—" : v.toLocaleString("en-IN", {maximumFractionDigits: 2});
+  const date = d => d.toLocaleString("en-IN", {day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit"});
   el.hidden = false;
-  const reasonRows = Object.entries(stats.byReason)
-    .sort((a, b) => b[1] - a[1])
-    .map(([r, n]) => `<div class="reason-row"><span>${REASON_LABEL[r] || r}</span><span class="reason-count">${n}</span></div>`)
-    .join("");
   el.innerHTML = `
-    <div class="session-stats-head">
-      <span class="stats-title">Session quality (KH filter rules)</span>
-    </div>
-    <div class="session-stats-grid">
-      <div class="ss-tile"><div class="ss-num">${stats.total}</div><div class="ss-lbl">total sessions</div></div>
-      <div class="ss-tile ok"><div class="ss-num">${stats.kept}</div><div class="ss-lbl">kept</div></div>
-      <div class="ss-tile bad"><div class="ss-num">${stats.dropped}</div><div class="ss-lbl">filtered out</div></div>
-    </div>
-    ${reasonRows ? `<div class="reason-list">${reasonRows}</div>` : ""}
-  `;
+    <div class="session-stats-head"><span class="stats-title">Session quality</span></div>
+    <div class="session-stats-grid">${["total", "ok", "flagged", "excluded"].map(k =>
+      `<div class="ss-tile ${k}"><div class="ss-num">${number(stats[k])}</div><div class="ss-lbl">${{total:"Total",ok:"OK",flagged:"Flagged for review",excluded:"Excluded from default analysis"}[k]}</div></div>`).join("")}</div>
+    <p class="quality-note">All readings are retained. A flagged session needs review; it is not automatically discarded. Excluded sessions remain available here. These counts cover the full sensor history.</p>
+    <p class="quality-note">Calculation eligibility is assessed separately: a level jump can prevent drawdown analysis while its recorded volume remains usable. No automatic jump correction has been applied.</p>
+    <p class="quality-note">Discharge is the recorded flow rate in L/min. Colours describe session quality, not a separate validation of the flow sensor. Volume uses the yield counter; a stationary counter can disagree with positive flow readings.</p>
+    <details><summary>Quality reasons and rules</summary>
+      <p class="quality-note">New session: any yield-counter decrease or a gap above 30 minutes. KH flags: fewer than 3 readings, no volume advance, a level step above 20 ft, or negative drawdown. Missing measurements are additional dashboard checks. Zero drawdown is not a level-rise flag, but cannot be used for specific capacity.</p>
+      <p class="quality-note">Exclusion from default analysis is a dashboard policy: fewer than 3 readings, no measurable positive volume, or missing endpoint water levels. Reason counts overlap.</p>
+      ${Object.entries(stats.byReason).map(([r,n]) => `<div class="reason-row"><span>${REASON_LABEL[r] || "Other issue"}</span><b>${number(n)}</b></div>`).join("")}
+    </details>
+    <div class="quality-toolbar"><label>Show in table and charts <select id="quality-filter">${[["all","All retained sessions"],["ok","OK only"],["flagged","Flagged for review"],["excluded","Excluded from default analysis"]].map(([v,l])=>`<option value="${v}" ${v===qualityFilter?"selected":""}>${l}</option>`).join("")}</select></label><button id="download-sessions">Download session CSV</button></div>
+    <div class="quality-table-wrap"><table class="quality-table"><thead><tr><th>Session / start–stop</th><th>Readings</th><th>Status / reasons</th><th>Observed volume (kL)</th><th>Observed drawdown (ft)</th><th>Jumps</th><th>Eligible calculations</th></tr></thead><tbody>
+    ${visible.slice(sessionPage*pageSize,(sessionPage+1)*pageSize).map(s=>`<tr><td>#${s.number}<br>${date(s.startTime)}<br>${date(s.stopTime)}</td><td>${s.n}</td><td><b>${{ok:"OK",flagged:"Flagged",excluded:"Excluded from default analysis"}[s.status]}</b><br>${s.reasons.map(r=>REASON_LABEL[r] || "Other issue").join("; ") || "No quality flags"}</td><td>${number(s.pumpedKl)}</td><td>${number(s.drawdownFt)}</td><td>${s.jump_count}</td><td>${[s.eligible_volume?"Volume":"",s.eligible_drawdown?"Drawdown":"",s.eligible_specific_capacity?"Specific capacity":""].filter(Boolean).join(", ") || "None; review raw readings"}</td></tr>`).join("") || '<tr><td colspan="7">No sessions in this category.</td></tr>'}
+    </tbody></table></div>
+    <div class="quality-toolbar"><button id="sessions-prev" ${sessionPage===0?"disabled":""}>Previous</button><span>Page ${sessionPage+1} of ${pages} · ${number(visible.length)} sessions</span><button id="sessions-next" ${sessionPage+1>=pages?"disabled":""}>Next</button></div>`;
+  el.querySelector("#quality-filter").onchange = e => { qualityFilter = e.target.value; sessionPage = 0; renderSessionStatsCard(); drawCharts(); };
+  el.querySelector("#sessions-prev").onclick = () => { sessionPage--; renderSessionStatsCard(); };
+  el.querySelector("#sessions-next").onclick = () => { sessionPage++; renderSessionStatsCard(); };
+  el.querySelector("#download-sessions").onclick = () => {
+    const rows = [["uid","session","start","stop","readings","status","reasons","observed_volume_kl","observed_drawdown_ft","jump_count","eligible_volume","eligible_drawdown","eligible_specific_capacity"],
+      ...visible.map(s=>[currentSensorSeries.uid,s.number,currentSensorSeries.times[s.start],currentSensorSeries.times[s.stop],s.n,s.status,s.reasons.join("; "),s.pumpedKl,s.drawdownFt,s.jump_count,s.eligible_volume,s.eligible_drawdown,s.eligible_specific_capacity])];
+    const csv = rows.map(row=>row.map(v=>'"'+String(v ?? "").replaceAll('"','""')+'"').join(",")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));
+    const a = document.createElement("a"); a.href=url; a.download=`${currentSensorSeries.uid}_sessions_${qualityFilter}.csv`; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+  };
 }
 
 function wireRangeChips() {
@@ -717,10 +673,10 @@ function openChartModal(which) {
   if (charts.modal) charts.modal.destroy();
   charts.modal = new Chart(document.getElementById("chart-modal-canvas"), {
     type: "line",
-    data: { labels: d.times, datasets: [{ data: which === "water" ? d.water : d.flow, borderColor: color, backgroundColor: color + "1A", fill: true, tension: 0.15 }] },
+    data: { labels: d.times, datasets: qualityDatasets(which === "water" ? d.water : d.flow, d.cover) },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false }, tooltip: { backgroundColor: "rgba(11,61,76,0.95)" } },
+      plugins: { legend: { display: true }, tooltip: { backgroundColor: "rgba(11,61,76,0.95)" } },
       scales: {
         x: { type: "time", time: { tooltipFormat: "dd MMM yyyy HH:mm" }, grid: { color: "#eef2f5" } },
         y: { title: { display: true, text: yTitle } },

@@ -28,6 +28,7 @@ from pathlib import Path
 
 import shapefile
 from openpyxl import load_workbook
+from session_quality import build_sessions, summarize, POLICY_VERSION
 
 # KH marks pump-run boundaries with cell fill colours in col A of the .xlsx.
 # Blue-tinted row = pump-START, red-tinted row = pump-STOP.
@@ -194,72 +195,7 @@ def uid_from_filename(name):
 
 
 def _kh_sessions(times, water, flow, yield_):
-    """KH's official session-boundary rule (Table 3 method sheet):
-
-      A new pumping session begins where cumulative yield decreases from the
-      previous row (counter resets at pump start), OR where the gap between
-      consecutive timestamps exceeds 30 minutes.
-
-    Then flag each session against the 4 KH quality rules:
-      too_few_samples    n_samples < 3
-      no_volume          cumulative yield did not advance across the session
-      sensor_relock_jump any single-sample |water_ft step| > 20
-      net_level_rise     ended shallower than it started
-    """
-    n = len(times)
-    if n < 2:
-        return []
-    # Boundary points that start a new session.
-    boundaries = [0]
-    for k in range(1, n):
-        gap_min = (times[k] - times[k - 1]).total_seconds() / 60
-        yield_reset = (
-            yield_[k] is not None and yield_[k - 1] is not None
-            and yield_[k] < yield_[k - 1] - 0.01
-        )
-        if yield_reset or gap_min > 30:
-            boundaries.append(k)
-    boundaries.append(n)
-
-    out = []
-    for b in range(len(boundaries) - 1):
-        a, e = boundaries[b], boundaries[b + 1] - 1
-        n_samples = e - a + 1
-        if n_samples < 1:
-            continue
-        if water[a] is None or water[e] is None:
-            continue
-        max_step = 0.0
-        for k in range(a + 1, e + 1):
-            if water[k] is not None and water[k - 1] is not None:
-                step = abs(water[k] - water[k - 1])
-                if step > max_step:
-                    max_step = step
-        drawdown = water[e] - water[a]
-        pumped = (
-            yield_[e] - yield_[a]
-            if yield_[a] is not None and yield_[e] is not None
-            else None
-        )
-        # KH filter DISABLED entirely (Sep 2026) — KH is re-sharing the full
-        # dataset with merged historical yield in the next few days; only then
-        # will these rules produce trustworthy numbers. For now every session
-        # is emitted as usable so the dashboard shows the raw pump-run data
-        # without any drop labels. Re-enable by uncommenting these checks.
-        reasons = []
-        if n_samples < 3:                 reasons.append("too_few_samples")
-        if pumped is None or pumped <= 0: reasons.append("no_volume")
-        if max_step > KH_JUMP_FT:         reasons.append("sensor_relock_jump")
-        if drawdown <= 0:                 reasons.append("net_level_rise")
-        out.append({
-            "start": a, "stop": e, "n": n_samples,
-            "drawdown_ft": round(drawdown, 2),
-            "pumped_kl": round(pumped, 2) if pumped is not None else None,
-            "max_step_ft": round(max_step, 2),
-            "usable": not reasons,
-            "reasons": reasons,
-        })
-    return out
+    return build_sessions(times, water, flow, yield_)
 
 
 def parse_kh_file(name, raw_bytes):
@@ -448,6 +384,8 @@ def main():
             "flow_lpm": z_["flow_lpm"],
             "yield_kl": z_["yield_kl"],
             "sessions": z_.get("sessions", []),
+            "quality_policy_version": POLICY_VERSION,
+            "quality_summary": summarize(z_.get("sessions", [])),
         }
         with open(out_dir / "sensor_series" / f"{uid}.json", "w") as f:
             json.dump(series, f)

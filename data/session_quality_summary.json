@@ -1,0 +1,19 @@
+{
+  "policy_version": 2,
+  "sensor_files": 579,
+  "raw_arrays_preserved": true,
+  "total": 1116407,
+  "ok": 360232,
+  "flagged": 202073,
+  "excluded": 554102,
+  "eligible_volume": 890347,
+  "eligible_drawdown": 286010,
+  "eligible_specific_capacity": 278666,
+  "jump_events": 318921,
+  "by_reason": {
+    "too_few_samples": 535746,
+    "no_volume": 226060,
+    "sensor_relock_jump": 112110,
+    "net_level_rise": 256036
+  }
+}
