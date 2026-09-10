@@ -57,7 +57,7 @@ class QualityTests(unittest.TestCase):
 
     def test_thresholds(self):
         self.assertEqual(len(build(series([10, 11, 12], minutes=[0, 30, 61]))), 2)
-        self.assertEqual(len(build(series([10, 11], [1, .999]))), 2)
+        self.assertEqual(len(build(series([10, 11], [1, .999]))), 1)  # v3: yield-drop no longer splits
         self.assertNotIn('sensor_relock_jump', build(series([10, 30, 31]))[0]['reasons'])
 
     def test_backend_browser_parity(self):
