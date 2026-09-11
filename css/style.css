@@ -321,3 +321,37 @@ button { font-family: inherit; }
 .quality-table th, .quality-table td { padding: 8px; text-align: left; border-bottom: 1px solid #dbe5ea; min-width: 65px; vertical-align: top; }
 .quality-table th { position: sticky; top: 0; background: #eaf3f5; }
 .quality-table td:first-child { min-width: 120px; }
+
+/* --- Sensor panel: Charts / Sessions tabs + refined table (UI refresh) --- */
+.sensor-tabs { display:flex; gap:2px; flex-shrink:0; border-bottom:1px solid var(--border); }
+.sensor-tab { border:none; background:none; padding:9px 16px; font-size:13px; font-weight:600; color:var(--text-muted); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; }
+.sensor-tab:hover { color:var(--brand-2); }
+.sensor-tab.active { color:var(--brand); border-bottom-color:var(--brand-2); }
+.tab-pane { display:none; flex:1 1 auto; min-height:0; flex-direction:column; gap:10px; }
+.tab-pane.active { display:flex; }
+.session-tiles { flex-shrink:0; }
+.session-stats-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; }
+.chart-block { min-height:130px; }
+.session-stats-card { display:flex; flex-direction:column; min-height:0; flex:1 1 auto; margin:0; padding:0; border:none; background:none; }
+.quality-table-wrap { flex:1 1 auto; min-height:0; max-height:none; overflow:auto; border:1px solid var(--border); border-radius:8px; }
+.quality-toolbar { margin:8px 0; }
+.quality-table td, .quality-table th, .quality-table td:first-child { min-width:auto; }
+.quality-table th { font-size:10.5px; }
+.cell-sub { color:var(--text-muted); font-size:10px; }
+.status-pill { display:inline-block; padding:1px 7px; border-radius:999px; font-size:10px; font-weight:700; white-space:nowrap; }
+.status-pill.ok { background:#d1fae5; color:#065f46; }
+.status-pill.flagged { background:#fef3c7; color:#92400e; }
+.status-pill.excluded { background:#e2e8f0; color:#475569; }
+.quality-table tr.row-flagged td { background:#fffdf5; }
+.quality-table tr.row-excluded td { background:#f8fafc; }
+.page-info { font-size:11px; color:var(--text-muted); }
+.quality-about { margin-top:8px; font-size:11px; }
+.quality-about summary { cursor:pointer; color:var(--brand-2); font-weight:600; padding:4px 0; }
+
+/* --- Clickable stat tiles + chart PNG download --- */
+.ss-tile { cursor: pointer; transition: box-shadow 120ms ease, transform 120ms ease; }
+.ss-tile:hover { transform: translateY(-1px); }
+.ss-tile.active { box-shadow: 0 0 0 2px var(--brand-2); }
+.dl-btn { border: 1px solid var(--border); background: transparent; color: var(--text-muted); font-size: 12px; line-height: 1; padding: 3px 7px; border-radius: 6px; cursor: pointer; }
+.dl-btn:hover { border-color: var(--brand-2); color: var(--brand-2); }
+

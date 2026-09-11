@@ -442,8 +442,18 @@ async function openSensorDetail(uid) {
       <div class="stat-card"><div class="stat-label">First reading</div><div class="stat-value small">${fmtDate(s.first_data_at)}</div></div>
       <div class="stat-card"><div class="stat-label">Last reading</div><div class="stat-value small">${fmtDate(s.last_data_at)}</div></div>
     </div>
-    ${s.has_data ? '<div id="session-stats-card" class="session-stats-card">Computing session quality…</div>' : ""}
-    ${s.has_data ? sensorChartsHTML() : `<div class="loading">No time-series data for this sensor in the current snapshot.</div>`}
+    ${s.has_data ? `
+      <div class="sensor-tabs">
+        <button class="sensor-tab active" data-tab="charts">Charts</button>
+        <button class="sensor-tab" data-tab="sessions">Sessions</button>
+      </div>
+      <div class="tab-pane active" data-pane="charts">
+        <div id="session-tiles" class="session-tiles"></div>
+        ${sensorChartsHTML()}
+      </div>
+      <div class="tab-pane" data-pane="sessions">
+        <div id="session-stats-card" class="session-stats-card">Computing session quality…</div>
+      </div>` : `<div class="loading">No time-series data for this sensor in the current snapshot.</div>`}
   `;
   panel.hidden = false;
   // If the sensor was clicked without a ward context, zoom in to it (like a ward selection).
@@ -454,6 +464,7 @@ async function openSensorDetail(uid) {
     if (selectedSensorUid !== uid) return;
     renderSessionStatsCard();
     wireRangeChips();
+    wireSensorTabs();
   }
 }
 
@@ -463,14 +474,14 @@ function sensorChartsHTML() {
     <div class="chart-block">
       <div class="chart-header">
         <div class="chart-title">Water level (ft below surface)</div>
-        <div class="chart-actions">${chips}<button class="expand-btn" data-expand="water" title="Expand">⤢</button></div>
+        <div class="chart-actions">${chips}<button class="dl-btn" data-download="water" title="Download PNG">⬇</button><button class="expand-btn" data-expand="water" title="Expand">⤢</button></div>
       </div>
       <div class="chart-canvas-wrap"><canvas id="chart-water"></canvas></div>
     </div>
     <div class="chart-block">
       <div class="chart-header">
         <div class="chart-title">Recorded discharge (L/min)</div>
-        <div class="chart-actions">${chips}<button class="expand-btn" data-expand="discharge" title="Expand">⤢</button></div>
+        <div class="chart-actions">${chips}<button class="dl-btn" data-download="discharge" title="Download PNG">⬇</button><button class="expand-btn" data-expand="discharge" title="Expand">⤢</button></div>
       </div>
       <div class="chart-canvas-wrap"><canvas id="chart-discharge"></canvas></div>
     </div>
@@ -541,13 +552,9 @@ function filteredSeries(range) {
   else if (range === "3M") from = new Date(last.getTime() - 90 * 86400000);
   const sessions = computeSessions(s);
   const cover = sessionCoverage(sessions, s.times.length);
-  const starts = new Set(sessions.map(session => session.startIdx));
   const out = { times: [], water: [], flow: [], cover: [] };
   for (let i = 0; i < times.length; i++) {
     if (from && times[i] < from) continue;
-    if (out.times.length && starts.has(i)) {
-      out.times.push(times[i]); out.water.push(null); out.flow.push(null); out.cover.push(0);
-    }
     out.times.push(times[i]);
     const included = qualityFilter === "all" || cover[i] === {ok: 1, flagged: 2, excluded: 3}[qualityFilter];
     out.water.push(included ? s.water_ft[i] : null);
@@ -575,23 +582,24 @@ function drawCharts() {
   if (charts.water) charts.water.destroy();
   if (charts.discharge) charts.discharge.destroy();
   const d = filteredSeries(currentRange);
+  const xUnit = currentRange === "3M" ? "week" : currentRange === "ALL" ? "month" : "day";
 
   const commonOpts = {
     responsive: true, maintainAspectRatio: false, animation: { duration: 250 },
     interaction: { mode: "nearest", intersect: false },
     plugins: {
-      legend: { display: true, position: "top", labels: { boxWidth: 12, boxHeight: 4, font: { size: 11 }, color: "#5a6472" } },
+      legend: { display: false },
       tooltip: { backgroundColor: "rgba(11,61,76,0.95)" },
     },
     scales: {
-      x: { type: "time", time: { tooltipFormat: "dd MMM HH:mm" }, ticks: { color: "#5a6472" }, grid: { display: false } },
+      x: { type: "time", time: { unit: xUnit, tooltipFormat: "dd MMM yyyy, hh:mm a", displayFormats: { hour: "dd MMM", day: "dd MMM", week: "dd MMM", month: "MMM yyyy" } }, ticks: { color: "#5a6472", maxRotation: 0, autoSkip: true }, grid: { display: false } },
       y: { ticks: { color: "#5a6472" }, grid: { color: "#eef2f5" } },
     },
     elements: { point: { radius: 0 }, line: { borderWidth: 1.6 } },
-    spanGaps: false,
+    spanGaps: true,
   };
-  const waterDs = qualityDatasets(d.water, d.cover);
-  const flowDs = qualityDatasets(d.flow, d.cover);
+  const waterDs = [{ label: "Water level", data: d.water, borderColor: "#0e7490", backgroundColor: "rgba(14,116,144,0.10)", fill: true, tension: 0.25, pointRadius: 0 }];
+  const flowDs = [{ label: "Discharge", data: d.flow, borderColor: "#0891b2", backgroundColor: "rgba(8,145,178,0.10)", fill: true, tension: 0.25, pointRadius: 0 }];
   charts.water = new Chart(document.getElementById("chart-water"), {
     type: "line",
     data: { labels: d.times, datasets: waterDs },
@@ -605,44 +613,65 @@ function drawCharts() {
 }
 
 function renderSessionStatsCard() {
-  const el = document.getElementById("session-stats-card");
-  if (!el || !currentSensorSeries) return;
+  if (!currentSensorSeries) return;
   const sessions = computeSessions(currentSensorSeries), stats = summarizeSessions(sessions);
+  const number = v => v == null ? "—" : v.toLocaleString("en-IN", {maximumFractionDigits: 2});
+  const date = d => d.toLocaleString("en-IN", {day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit", second:"2-digit", hour12:true});
+  const LBL = {total:"Total", ok:"OK", flagged:"Flagged", excluded:"Excluded"};
+  const STAT = {ok:"OK", flagged:"Flagged", excluded:"Excluded"};
+  const tiles = document.getElementById("session-tiles");
+  if (tiles) {
+    const activeKey = qualityFilter === "all" ? "total" : qualityFilter;
+    tiles.innerHTML =
+      `<div class="session-stats-grid">${["total","ok","flagged","excluded"].map(k =>
+        `<div class="ss-tile ${k}${k===activeKey?" active":""}" data-filter="${k}"><div class="ss-num">${number(stats[k])}</div><div class="ss-lbl">${LBL[k]}</div></div>`).join("")}</div>`;
+    tiles.querySelectorAll(".ss-tile").forEach(t => t.onclick = () => {
+      qualityFilter = t.dataset.filter === "total" ? "all" : t.dataset.filter;
+      sessionPage = 0; renderSessionStatsCard(); drawCharts();
+    });
+  }
+  const el = document.getElementById("session-stats-card");
+  if (!el) return;
   const visible = sessions.filter(s => qualityFilter === "all" || s.status === qualityFilter);
   const pageSize = 25, pages = Math.max(1, Math.ceil(visible.length / pageSize));
-  sessionPage = Math.min(sessionPage, pages - 1);
-  const number = v => v == null ? "—" : v.toLocaleString("en-IN", {maximumFractionDigits: 2});
-  const date = d => d.toLocaleString("en-IN", {day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit"});
+  sessionPage = Math.min(Math.max(0, sessionPage), pages - 1);
   el.hidden = false;
   el.innerHTML = `
-    <div class="session-stats-head"><span class="stats-title">Session quality</span></div>
-    <div class="session-stats-grid">${["total", "ok", "flagged", "excluded"].map(k =>
-      `<div class="ss-tile ${k}"><div class="ss-num">${number(stats[k])}</div><div class="ss-lbl">${{total:"Total",ok:"OK",flagged:"Flagged for review",excluded:"Excluded from default analysis"}[k]}</div></div>`).join("")}</div>
-    <p class="quality-note">All readings are retained. A flagged session needs review; it is not automatically discarded. Excluded sessions remain available here. These counts cover the full sensor history.</p>
-    <p class="quality-note">Calculation eligibility is assessed separately: a level jump can prevent drawdown analysis while its recorded volume remains usable. No automatic jump correction has been applied.</p>
-    <p class="quality-note">Discharge is the recorded flow rate in L/min. Colours describe session quality, not a separate validation of the flow sensor. Volume is reconstructed by integrating the flow rate (L/min × minutes), because the device's cumulative-yield counter is unreliable; the raw counter is retained in the data for audit.</p>
-    <details><summary>Quality reasons and rules</summary>
-      <p class="quality-note">New session: a gap of more than 30 minutes between readings. KH flags: fewer than 3 readings, no volume advance, a level step above 20 ft, or negative drawdown. Missing measurements are additional dashboard checks. Zero drawdown is not a level-rise flag, but cannot be used for specific capacity.</p>
-      <p class="quality-note">Exclusion from default analysis is a dashboard policy: fewer than 3 readings, no measurable positive volume, or missing endpoint water levels. Reason counts overlap.</p>
-      ${Object.entries(stats.byReason).map(([r,n]) => `<div class="reason-row"><span>${REASON_LABEL[r] || "Other issue"}</span><b>${number(n)}</b></div>`).join("")}
-    </details>
-    <div class="quality-toolbar"><label>Show in table and charts <select id="quality-filter">${[["all","All retained sessions"],["ok","OK only"],["flagged","Flagged for review"],["excluded","Excluded from default analysis"]].map(([v,l])=>`<option value="${v}" ${v===qualityFilter?"selected":""}>${l}</option>`).join("")}</select></label><button id="download-sessions">Download session CSV</button></div>
-    <div class="quality-table-wrap"><table class="quality-table"><thead><tr><th>Session / start–stop</th><th>Readings</th><th>Status / reasons</th><th>Observed volume (kL)</th><th>Observed drawdown (ft)</th><th>Jumps</th><th>Eligible calculations</th></tr></thead><tbody>
-    ${visible.slice(sessionPage*pageSize,(sessionPage+1)*pageSize).map(s=>`<tr><td>#${s.number}<br>${date(s.startTime)}<br>${date(s.stopTime)}</td><td>${s.n}</td><td><b>${{ok:"OK",flagged:"Flagged",excluded:"Excluded from default analysis"}[s.status]}</b><br>${s.reasons.map(r=>REASON_LABEL[r] || "Other issue").join("; ") || "No quality flags"}</td><td>${number(s.pumpedKl)}</td><td>${number(s.drawdownFt)}</td><td>${s.jump_count}</td><td>${[s.eligible_volume?"Volume":"",s.eligible_drawdown?"Drawdown":"",s.eligible_specific_capacity?"Specific capacity":""].filter(Boolean).join(", ") || "None; review raw readings"}</td></tr>`).join("") || '<tr><td colspan="7">No sessions in this category.</td></tr>'}
+    <div class="quality-toolbar">
+      <label>Show <select id="quality-filter">${[["all","All sessions"],["ok","OK only"],["flagged","Flagged"],["excluded","Excluded"]].map(([v,l])=>`<option value="${v}" ${v===qualityFilter?"selected":""}>${l}</option>`).join("")}</select></label>
+      <button id="download-sessions">Download CSV</button>
+    </div>
+    <div class="quality-table-wrap"><table class="quality-table"><thead><tr><th>Session</th><th>Read.</th><th>Status</th><th>Vol&nbsp;kL</th><th>Draw&nbsp;ft</th><th>Jumps</th><th>Eligible</th></tr></thead><tbody>
+    ${visible.slice(sessionPage*pageSize,(sessionPage+1)*pageSize).map(s=>`<tr class="row-${s.status}"><td><b>#${s.number}</b><br><span class="cell-sub">${date(s.startTime)}<br>\u2192 ${date(s.stopTime)}</span></td><td>${s.n}</td><td><span class="status-pill ${s.status}">${STAT[s.status]}</span>${s.reasons.length?`<br><span class="cell-sub">${s.reasons.map(r=>REASON_LABEL[r]||"Other").join(", ")}</span>`:""}</td><td>${number(s.pumpedKl)}</td><td>${number(s.drawdownFt)}</td><td>${s.jump_count}</td><td><span class="cell-sub">${[s.eligible_volume?"Vol":"",s.eligible_drawdown?"Draw":"",s.eligible_specific_capacity?"Sp.cap":""].filter(Boolean).join(", ")||"—"}</span></td></tr>`).join("") || '<tr><td colspan="7" class="cell-sub">No sessions in this category.</td></tr>'}
     </tbody></table></div>
-    <div class="quality-toolbar"><button id="sessions-prev" ${sessionPage===0?"disabled":""}>Previous</button><span>Page ${sessionPage+1} of ${pages} · ${number(visible.length)} sessions</span><button id="sessions-next" ${sessionPage+1>=pages?"disabled":""}>Next</button></div>`;
+    <div class="quality-toolbar"><button id="sessions-prev" ${sessionPage===0?"disabled":""}>‹ Prev</button><span class="page-info">Page ${sessionPage+1}/${pages} · ${number(visible.length)} shown</span><button id="sessions-next" ${sessionPage+1>=pages?"disabled":""}>Next ›</button></div>
+    <details class="quality-about"><summary>About these numbers &amp; rules</summary>
+      <p class="quality-note">All readings are retained. Flagged sessions need review but are not discarded; excluded sessions (fewer than 3 readings, no positive volume, or missing endpoint water levels) stay available here. Counts cover the full sensor history.</p>
+      <p class="quality-note">New session: a gap of more than 30 minutes. Volume is reconstructed by integrating flow (L/min × minutes) because the device's cumulative-yield counter is unreliable; the raw counter is retained for audit. A level jump over 20 ft flags a session and blocks drawdown, while its volume can stay usable.</p>
+      ${Object.entries(stats.byReason).map(([r,n]) => `<div class="reason-row"><span>${REASON_LABEL[r] || "Other issue"}</span><b>${number(n)}</b></div>`).join("")}
+    </details>`;
   el.querySelector("#quality-filter").onchange = e => { qualityFilter = e.target.value; sessionPage = 0; renderSessionStatsCard(); drawCharts(); };
   el.querySelector("#sessions-prev").onclick = () => { sessionPage--; renderSessionStatsCard(); };
   el.querySelector("#sessions-next").onclick = () => { sessionPage++; renderSessionStatsCard(); };
   el.querySelector("#download-sessions").onclick = () => {
-    const rows = [["uid","session","start","stop","readings","status","reasons","observed_volume_kl","observed_drawdown_ft","jump_count","eligible_volume","eligible_drawdown","eligible_specific_capacity"],
-      ...visible.map(s=>[currentSensorSeries.uid,s.number,currentSensorSeries.times[s.start],currentSensorSeries.times[s.stop],s.n,s.status,s.reasons.join("; "),s.pumpedKl,s.drawdownFt,s.jump_count,s.eligible_volume,s.eligible_drawdown,s.eligible_specific_capacity])];
+    const rows = [["uid","session","start","stop","readings","status","reasons","observed_volume_kl","observed_drawdown_ft","jump_count"],
+      ...visible.map(s=>[currentSensorSeries.uid,s.number,date(s.startTime),date(s.stopTime),s.n,s.status,s.reasons.join("; "),s.pumpedKl,s.drawdownFt,s.jump_count])];
     const csv = rows.map(row=>row.map(v=>'"'+String(v ?? "").replaceAll('"','""')+'"').join(",")).join("\r\n");
     const url = URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));
     const a = document.createElement("a"); a.href=url; a.download=`${currentSensorSeries.uid}_sessions_${qualityFilter}.csv`; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
   };
 }
 
+function wireSensorTabs() {
+  document.querySelectorAll(".sensor-tab").forEach(tab => {
+    tab.onclick = () => {
+      const name = tab.dataset.tab;
+      document.querySelectorAll(".sensor-tab").forEach(t => t.classList.toggle("active", t === tab));
+      document.querySelectorAll(".tab-pane").forEach(pane => pane.classList.toggle("active", pane.dataset.pane === name));
+      if (name === "charts") drawCharts();
+    };
+  });
+}
 function wireRangeChips() {
   document.querySelectorAll(".range-chip").forEach(chip => {
     chip.addEventListener("click", () => {
@@ -659,6 +688,25 @@ function wireRangeChips() {
   document.querySelectorAll(".expand-btn").forEach(btn => {
     btn.addEventListener("click", () => openChartModal(btn.dataset.expand));
   });
+  document.querySelectorAll(".dl-btn").forEach(btn => {
+    btn.addEventListener("click", () => downloadChartPng(btn.dataset.download));
+  });
+}
+
+function downloadChartPng(which) {
+  const chart = which === "modal" ? charts.modal : charts[which];
+  if (!chart || !currentSensorSeries) return;
+  const src = chart.canvas;
+  const tmp = document.createElement("canvas");
+  tmp.width = src.width; tmp.height = src.height;
+  const ctx = tmp.getContext("2d");
+  ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, tmp.width, tmp.height);
+  ctx.drawImage(src, 0, 0);
+  const label = which === "discharge" ? "discharge" : which === "modal" ? "chart" : "water_level";
+  const a = document.createElement("a");
+  a.href = tmp.toDataURL("image/png");
+  a.download = `${currentSensorSeries.uid}_${label}.png`;
+  a.click();
 }
 
 function openChartModal(which) {
@@ -667,18 +715,26 @@ function openChartModal(which) {
   const body = document.getElementById("chart-modal-body");
   body.innerHTML = `<canvas id="chart-modal-canvas"></canvas>`;
   openOverlay("chart-modal");
+  const _mc = document.querySelector("#chart-modal .close-btn");
+  if (_mc && !document.getElementById("modal-dl")) {
+    const dl = document.createElement("button");
+    dl.id = "modal-dl"; dl.className = "close-btn"; dl.title = "Download PNG"; dl.textContent = "\u2b07";
+    dl.onclick = () => downloadChartPng("modal");
+    _mc.parentNode.insertBefore(dl, _mc);
+  }
   const d = filteredSeries(currentRange);
+  const xUnit = currentRange === "3M" ? "week" : currentRange === "ALL" ? "month" : "day";
   const color = which === "water" ? "#1e3a8a" : "#0891b2";
   const yTitle = which === "water" ? "ft below surface" : "L/min";
   if (charts.modal) charts.modal.destroy();
   charts.modal = new Chart(document.getElementById("chart-modal-canvas"), {
     type: "line",
-    data: { labels: d.times, datasets: qualityDatasets(which === "water" ? d.water : d.flow, d.cover) },
+    data: { labels: d.times, datasets: [{ data: which === "water" ? d.water : d.flow, borderColor: color, backgroundColor: color + "1A", fill: true, tension: 0.25, pointRadius: 0 }] },
     options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: true }, tooltip: { backgroundColor: "rgba(11,61,76,0.95)" } },
+      responsive: true, maintainAspectRatio: false, spanGaps: true,
+      plugins: { legend: { display: false }, tooltip: { backgroundColor: "rgba(11,61,76,0.95)" } },
       scales: {
-        x: { type: "time", time: { tooltipFormat: "dd MMM yyyy HH:mm" }, grid: { color: "#eef2f5" } },
+        x: { type: "time", time: { unit: (currentRange === "3M" ? "week" : currentRange === "ALL" ? "month" : "day"), tooltipFormat: "dd MMM yyyy, hh:mm a", displayFormats: { hour: "dd MMM", day: "dd MMM", week: "dd MMM", month: "MMM yyyy" } }, grid: { color: "#eef2f5" } },
         y: { title: { display: true, text: yTitle } },
       },
       elements: { point: { radius: 0 }, line: { borderWidth: 1.8 } },
