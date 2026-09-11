@@ -199,7 +199,7 @@ button { font-family: inherit; }
 .stat-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
 .section-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 16px 0 8px; }
-.uid-list { display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; flex-shrink: 0; }
+.uid-list { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .uid-item {
   padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
   display: flex; justify-content: space-between; align-items: center; gap: 8px;
@@ -354,4 +354,9 @@ button { font-family: inherit; }
 .ss-tile.active { box-shadow: 0 0 0 2px var(--brand-2); }
 .dl-btn { border: 1px solid var(--border); background: transparent; color: var(--text-muted); font-size: 12px; line-height: 1; padding: 3px 7px; border-radius: 6px; cursor: pointer; }
 .dl-btn:hover { border-color: var(--brand-2); color: var(--brand-2); }
+
+/* --- Chart mode selectors + wrap actions --- */
+.chart-actions { flex-wrap: wrap; }
+.chart-mode { font-size: 11px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: #fff; cursor: pointer; }
+.chart-mode:hover { border-color: var(--brand-2); }
 

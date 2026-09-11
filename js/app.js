@@ -474,14 +474,14 @@ function sensorChartsHTML() {
     <div class="chart-block">
       <div class="chart-header">
         <div class="chart-title">Water level (ft below surface)</div>
-        <div class="chart-actions">${chips}<button class="dl-btn" data-download="water" title="Download PNG">⬇</button><button class="expand-btn" data-expand="water" title="Expand">⤢</button></div>
+        <div class="chart-actions"><select class="chart-mode" data-chart="water" title="Level filter"><option value="all">All levels</option><option value="off">Static (pump off)</option><option value="on">Pumping (pump on)</option></select>${chips}<button class="dl-btn" data-download="water" title="Download PNG">⬇</button><button class="expand-btn" data-expand="water" title="Expand">⤢</button></div>
       </div>
       <div class="chart-canvas-wrap"><canvas id="chart-water"></canvas></div>
     </div>
     <div class="chart-block">
       <div class="chart-header">
         <div class="chart-title">Recorded discharge (L/min)</div>
-        <div class="chart-actions">${chips}<button class="dl-btn" data-download="discharge" title="Download PNG">⬇</button><button class="expand-btn" data-expand="discharge" title="Expand">⤢</button></div>
+        <div class="chart-actions"><select class="chart-mode" data-chart="discharge" title="Discharge filter"><option value="all">All</option><option value="dmax">Daily max</option><option value="dmin">Daily min</option></select>${chips}<button class="dl-btn" data-download="discharge" title="Download PNG">⬇</button><button class="expand-btn" data-expand="discharge" title="Expand">⤢</button></div>
       </div>
       <div class="chart-canvas-wrap"><canvas id="chart-discharge"></canvas></div>
     </div>
@@ -492,6 +492,7 @@ function sensorChartsHTML() {
 // Backend annotations are authoritative for the current policy version.
 const sessionCache = new WeakMap();
 let qualityFilter = "all";
+let waterMode = "all", dischargeMode = "all";
 let sessionPage = 0;
 const REASON_LABEL = {
   too_few_samples: "Fewer than 3 readings",
@@ -538,6 +539,7 @@ async function loadAndRenderSeries(uid) {
   qualityFilter = "all";
   sessionPage = 0;
   currentRange = "1M";
+  waterMode = "all"; dischargeMode = "all";
   drawCharts();
 }
 
@@ -578,19 +580,41 @@ function qualityDatasets(values, cover) {
   }));
 }
 
-function drawCharts() {
-  if (charts.water) charts.water.destroy();
-  if (charts.discharge) charts.discharge.destroy();
-  const d = filteredSeries(currentRange);
-  const xUnit = currentRange === "3M" ? "week" : currentRange === "ALL" ? "month" : "day";
-
-  const commonOpts = {
+function rangeFrom() {
+  const S = currentSensorSeries; if (!S || !S.times.length) return null;
+  const last = new Date(S.times[S.times.length - 1]);
+  if (currentRange === "1W") return new Date(last.getTime() - 7 * 86400000);
+  if (currentRange === "1M") return new Date(last.getTime() - 30 * 86400000);
+  if (currentRange === "3M") return new Date(last.getTime() - 90 * 86400000);
+  return null;
+}
+function sessionLevelPoints(which) {
+  const S = currentSensorSeries, wl = S.water_ft, from = rangeFrom();
+  const pts = [];
+  for (const se of computeSessions(S)) {
+    if (qualityFilter !== "all" && se.status !== qualityFilter) continue;
+    const idx = which === "off" ? se.startIdx : se.stopIdx;
+    const y = wl[idx]; if (y == null) continue;
+    const x = new Date(S.times[idx]); if (from && x < from) continue;
+    pts.push({ x, y });
+  }
+  return pts;
+}
+function dailyExtreme(times, values, mode) {
+  const byDay = new Map();
+  for (let i = 0; i < times.length; i++) {
+    if (values[i] == null) continue;
+    const t = times[i], key = t.getFullYear() + "-" + t.getMonth() + "-" + t.getDate();
+    const cur = byDay.get(key);
+    if (!cur || (mode === "dmax" ? values[i] > cur.y : values[i] < cur.y)) byDay.set(key, { x: t, y: values[i] });
+  }
+  return [...byDay.values()].sort((a, b) => a.x - b.x);
+}
+function chartBaseOpts(xUnit) {
+  return {
     responsive: true, maintainAspectRatio: false, animation: { duration: 250 },
     interaction: { mode: "nearest", intersect: false },
-    plugins: {
-      legend: { display: false },
-      tooltip: { backgroundColor: "rgba(11,61,76,0.95)" },
-    },
+    plugins: { legend: { display: false }, tooltip: { backgroundColor: "rgba(11,61,76,0.95)" } },
     scales: {
       x: { type: "time", time: { unit: xUnit, tooltipFormat: "dd MMM yyyy, hh:mm a", displayFormats: { hour: "dd MMM", day: "dd MMM", week: "dd MMM", month: "MMM yyyy" } }, ticks: { color: "#5a6472", maxRotation: 0, autoSkip: true }, grid: { display: false } },
       y: { ticks: { color: "#5a6472" }, grid: { color: "#eef2f5" } },
@@ -598,20 +622,38 @@ function drawCharts() {
     elements: { point: { radius: 0 }, line: { borderWidth: 1.6 } },
     spanGaps: true,
   };
-  const waterDs = [{ label: "Water level", data: d.water, borderColor: "#0e7490", backgroundColor: "rgba(14,116,144,0.10)", fill: true, tension: 0.25, pointRadius: 0 }];
-  const flowDs = [{ label: "Discharge", data: d.flow, borderColor: "#0891b2", backgroundColor: "rgba(8,145,178,0.10)", fill: true, tension: 0.25, pointRadius: 0 }];
+}
+function drawCharts() {
+  if (charts.water) charts.water.destroy();
+  if (charts.discharge) charts.discharge.destroy();
+  const d = filteredSeries(currentRange);
+  const xUnit = currentRange === "3M" ? "week" : currentRange === "ALL" ? "month" : "day";
+  const yOpts = t => { const o = chartBaseOpts(xUnit); o.scales.y.title = { display: true, text: t, color: "#5a6472" }; return o; };
+  // Water level
+  let wDatasets, wLabels;
+  if (waterMode === "all") {
+    wDatasets = [{ label: "Water level", data: d.water, borderColor: "#0e7490", backgroundColor: "rgba(14,116,144,0.10)", fill: true, tension: 0.25, pointRadius: 0 }];
+    wLabels = d.times;
+  } else {
+    const pts = sessionLevelPoints(waterMode);
+    wDatasets = [{ label: waterMode === "off" ? "Static level (pump off)" : "Pumping level (pump on)", data: pts, borderColor: "#0e7490", backgroundColor: "rgba(14,116,144,0.10)", fill: false, tension: 0.2, pointRadius: 2.5, borderWidth: 1.6 }];
+  }
   charts.water = new Chart(document.getElementById("chart-water"), {
-    type: "line",
-    data: { labels: d.times, datasets: waterDs },
-    options: { ...commonOpts, scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, title: { display: true, text: "ft below surface", color: "#5a6472" } } } },
+    type: "line", data: wLabels ? { labels: wLabels, datasets: wDatasets } : { datasets: wDatasets }, options: yOpts("ft below surface"),
   });
+  // Discharge
+  let fDatasets, fLabels;
+  if (dischargeMode === "all") {
+    fDatasets = [{ label: "Discharge", data: d.flow, borderColor: "#0891b2", backgroundColor: "rgba(8,145,178,0.10)", fill: true, tension: 0.25, pointRadius: 0 }];
+    fLabels = d.times;
+  } else {
+    const pts = dailyExtreme(d.times, d.flow, dischargeMode);
+    fDatasets = [{ label: dischargeMode === "dmax" ? "Daily max discharge" : "Daily min discharge", data: pts, borderColor: "#0891b2", backgroundColor: "rgba(8,145,178,0.10)", fill: false, tension: 0.2, pointRadius: 2.5, borderWidth: 1.6 }];
+  }
   charts.discharge = new Chart(document.getElementById("chart-discharge"), {
-    type: "line",
-    data: { labels: d.times, datasets: flowDs },
-    options: { ...commonOpts, scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, title: { display: true, text: "L/min", color: "#5a6472" } } } },
+    type: "line", data: fLabels ? { labels: fLabels, datasets: fDatasets } : { datasets: fDatasets }, options: yOpts("L/min"),
   });
 }
-
 function renderSessionStatsCard() {
   if (!currentSensorSeries) return;
   const sessions = computeSessions(currentSensorSeries), stats = summarizeSessions(sessions);
@@ -691,6 +733,12 @@ function wireRangeChips() {
   document.querySelectorAll(".dl-btn").forEach(btn => {
     btn.addEventListener("click", () => downloadChartPng(btn.dataset.download));
   });
+  document.querySelectorAll(".chart-mode").forEach(sel => {
+    sel.addEventListener("change", () => {
+      if (sel.dataset.chart === "water") waterMode = sel.value; else dischargeMode = sel.value;
+      drawCharts();
+    });
+  });
 }
 
 function downloadChartPng(which) {
@@ -710,7 +758,9 @@ function downloadChartPng(which) {
 }
 
 function openChartModal(which) {
-  const title = which === "water" ? "Water level (ft below surface)" : "Discharge (L/min)";
+  const isWater = which === "water";
+  const mode = isWater ? waterMode : dischargeMode;
+  const title = isWater ? "Water level (ft below surface)" : "Discharge (L/min)";
   document.getElementById("chart-modal-title").textContent = `${title} — ${currentSensorSeries.uid}`;
   const body = document.getElementById("chart-modal-body");
   body.innerHTML = `<canvas id="chart-modal-canvas"></canvas>`;
@@ -718,30 +768,38 @@ function openChartModal(which) {
   const _mc = document.querySelector("#chart-modal .close-btn");
   if (_mc && !document.getElementById("modal-dl")) {
     const dl = document.createElement("button");
-    dl.id = "modal-dl"; dl.className = "close-btn"; dl.title = "Download PNG"; dl.textContent = "\u2b07";
+    dl.id = "modal-dl"; dl.className = "close-btn"; dl.title = "Download PNG"; dl.textContent = "⬇";
     dl.onclick = () => downloadChartPng("modal");
     _mc.parentNode.insertBefore(dl, _mc);
   }
   const d = filteredSeries(currentRange);
+  const color = isWater ? "#1e3a8a" : "#0891b2";
+  const yTitle = isWater ? "ft below surface" : "L/min";
   const xUnit = currentRange === "3M" ? "week" : currentRange === "ALL" ? "month" : "day";
-  const color = which === "water" ? "#1e3a8a" : "#0891b2";
-  const yTitle = which === "water" ? "ft below surface" : "L/min";
+  let datasets, labels;
+  if (mode === "all") {
+    labels = d.times;
+    datasets = [{ data: isWater ? d.water : d.flow, borderColor: color, backgroundColor: color + "1A", fill: true, tension: 0.25, pointRadius: 0 }];
+  } else if (isWater) {
+    datasets = [{ data: sessionLevelPoints(waterMode), borderColor: color, backgroundColor: color + "1A", fill: false, tension: 0.2, pointRadius: 3 }];
+  } else {
+    datasets = [{ data: dailyExtreme(d.times, d.flow, dischargeMode), borderColor: color, backgroundColor: color + "1A", fill: false, tension: 0.2, pointRadius: 3 }];
+  }
   if (charts.modal) charts.modal.destroy();
   charts.modal = new Chart(document.getElementById("chart-modal-canvas"), {
     type: "line",
-    data: { labels: d.times, datasets: [{ data: which === "water" ? d.water : d.flow, borderColor: color, backgroundColor: color + "1A", fill: true, tension: 0.25, pointRadius: 0 }] },
+    data: labels ? { labels, datasets } : { datasets },
     options: {
       responsive: true, maintainAspectRatio: false, spanGaps: true,
       plugins: { legend: { display: false }, tooltip: { backgroundColor: "rgba(11,61,76,0.95)" } },
       scales: {
-        x: { type: "time", time: { unit: (currentRange === "3M" ? "week" : currentRange === "ALL" ? "month" : "day"), tooltipFormat: "dd MMM yyyy, hh:mm a", displayFormats: { hour: "dd MMM", day: "dd MMM", week: "dd MMM", month: "MMM yyyy" } }, grid: { color: "#eef2f5" } },
+        x: { type: "time", time: { unit: xUnit, tooltipFormat: "dd MMM yyyy, hh:mm a", displayFormats: { hour: "dd MMM", day: "dd MMM", week: "dd MMM", month: "MMM yyyy" } }, grid: { color: "#eef2f5" } },
         y: { title: { display: true, text: yTitle } },
       },
-      elements: { point: { radius: 0 }, line: { borderWidth: 1.8 } },
+      elements: { point: { radius: mode === "all" ? 0 : 3 }, line: { borderWidth: 1.8 } },
     },
   });
 }
-
 // ---------- Utils ----------
 function fmtDate(iso) {
   if (!iso) return "—";
