@@ -2,6 +2,7 @@
 // Full-screen map first. Everything else opens on click.
 
 const CONFIG = window.DASHBOARD_CONFIG || { source: "static", apiBase: "" };
+const ANALYTICS_API_BASE = "https://bbmp-borewell-api.vishwas-borewellworkersdev.workers.dev";
 function urlOf(name) {
   if (CONFIG.source === "api" && CONFIG.apiBase) {
     const map = { "wards.geojson": "/api/wards.geojson", "sensors.json": "/api/sensors", "manifest.json": "/api/manifest" };
@@ -17,23 +18,339 @@ function seriesUrlOf(uid) {
 let sensors = [];              // full list
 let wards = null;              // GeoJSON
 let manifest = null;
+let sessionSummary = null;
+let analyticsLoaded = false;
+let sensorQcByUid = new Map();
+let criticalGroundwaterByNo = new Map();
+let pumpingPerformanceWardSummaryByNo = new Map();
+let pumpingPerformanceWardThresholds = {};
+let volumetricDeficitByNo = new Map();
 let sensorsByUid = {};
 let sensorsByWard = {};        // ward_no -> [sensor]
 let currentSensorMarkers = null;
 let wardLayer = null;
 let map;
 let selectedWardNo = null;
+let highlightedWardNos = new Set();
+let quickViewLabel = "";
 
 function defaultWardStyle(feat) {
   const p = feat.properties;
   const isSelected = selectedWardNo != null && p.ward_no === selectedWardNo;
-  const dimmed = selectedWardNo != null && !isSelected;
+  const status = wardStatusKey(p);
+  const filterDimmed = wardStatusFilter && status !== wardStatusFilter;
+  const isHighlighted = highlightedWardNos.has(normalizeWardNo(p.ward_no));
+  const quickDimmed = highlightedWardNos.size > 0 && !isHighlighted;
+  const dimmed = (selectedWardNo != null && !isSelected) || filterDimmed || quickDimmed;
+  const colored = wardColor(p);
   return {
-    color: isSelected ? "#0b3d4c" : "#5a7a86",
-    weight: isSelected ? 2.6 : 1.2,
-    opacity: dimmed ? 0.15 : 0.9,
-    fillColor: isSelected ? "#028090" : "#a8d8e2",
-    fillOpacity: dimmed ? 0.05 : (isSelected ? 0.35 : 0.22),
+    color: isSelected ? "#0b3d4c" : colored.stroke,
+    weight: isSelected ? 3 : isHighlighted ? 2.8 : (status === "none" ? 0.9 : 1.35),
+    opacity: dimmed ? 0.16 : 0.95,
+    fillColor: isSelected ? "#028090" : colored.fill,
+    fillOpacity: dimmed ? 0.05 : (isSelected ? 0.42 : isHighlighted ? Math.max(colored.opacity, 0.5) : colored.opacity),
+  };
+}
+
+function sensorStatusKey(s) {
+  if (!s.has_data) return "no_data";
+  return "with_data";
+}
+
+function wardStatusKey(p) {
+  if (analyticsLoaded && isAnalysisLens(currentLens)) return mapAnalysisWardStatusKey(p.ward_no);
+  const total = p.sensor_total || 0;
+  const withData = p.sensor_with_data || 0;
+  if (!total && !withData) return "none";
+  const ratio = total ? withData / total : 0;
+  if (withData >= 5 || ratio >= 0.75) return "high";
+  return "low";
+}
+
+function wardReadingLoad(p) {
+  return (sensorsByWard[p.ward_no] || []).reduce((sum, s) => sum + (s.reading_count || 0), 0);
+}
+
+function wardColor(p) {
+  if (analyticsLoaded && isAnalysisLens(currentLens)) {
+    const key = mapAnalysisWardStatusKey(p.ward_no);
+    if (key === "none") return BASE_WARD_COLOR;
+    return {
+      fill: CRITICALITY_COLORS[key] || BASE_WARD_COLOR.fill,
+      stroke: CRITICALITY_COLORS[key] || BASE_WARD_COLOR.stroke,
+      opacity: 1,
+    };
+  }
+  const values = wards ? wards.features.map(f => currentLens === "readings" ? wardReadingLoad(f.properties) : (f.properties.sensor_with_data || 0)) : [];
+  const color = choroColor(currentLens === "readings" ? wardReadingLoad(p) : (p.sensor_with_data || 0), computeBreaks(values));
+  return { fill: color, stroke: "#5a7a86", opacity: (p.sensor_with_data || 0) ? 0.3 : 0.12 };
+}
+
+function normalizeWardNo(value) {
+  if (value == null || value === "") return null;
+  const n = Number(String(value).trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+function isYes(value) {
+  return String(value || "").trim().toLowerCase() === "yes";
+}
+
+const LINEAR_DECLINE_THRESHOLD_FT_PER_WEEK = 0.1;
+const TREND_SIGNIFICANCE_ALPHA = 0.05;
+const GROUNDWATER_MIN_MK_WEEKS = 8;
+
+function numOrNull(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function calculateGroundwaterCriticality(input = {}) {
+  const linear = numOrNull(input.linearSlopeFtPerWeek ?? input.weeklyChangeFtWeek ?? input.weekly_change_ft_week_from_dashboard_average);
+  const theil = numOrNull(input.senSlopeFtPerWeek ?? input.theilSlopeFtPerWeek ?? linear);
+  const mk = numOrNull(input.mannKendallS);
+  const pValue = numOrNull(input.mannKendallPValue);
+  const pointCount = numOrNull(input.pointCount ?? input.usableWeeklyValues ?? input.weeklyPointsUsed);
+  const hasSlope = Number.isFinite(linear) || Number.isFinite(theil);
+  const selectedSlope = Number.isFinite(linear) ? linear : theil;
+  const hasTrendEvidence = hasSlope;
+  const hasMannKendall = Number.isFinite(pointCount)
+    && pointCount >= GROUNDWATER_MIN_MK_WEEKS
+    && Number.isFinite(mk)
+    && Number.isFinite(pValue);
+  const linearCritical = Number.isFinite(linear) && linear > LINEAR_DECLINE_THRESHOLD_FT_PER_WEEK;
+  const theilCritical = Number.isFinite(theil) && theil > LINEAR_DECLINE_THRESHOLD_FT_PER_WEEK;
+  const mannCritical = hasMannKendall && mk > 0 && pValue <= TREND_SIGNIFICANCE_ALPHA;
+  const linearMannCritical = hasMannKendall ? linearCritical && mannCritical : linearCritical;
+  const theilMannCritical = hasMannKendall ? theilCritical && mannCritical : theilCritical;
+  const rising = Number.isFinite(selectedSlope) && selectedSlope < -LINEAR_DECLINE_THRESHOLD_FT_PER_WEEK;
+  const critical = linearMannCritical || theilMannCritical;
+  const stable = hasTrendEvidence && !critical && !rising;
+  const category = critical
+    ? "Critical: Ward-average groundwater decline"
+    : rising
+    ? "Possible groundwater rise"
+    : stable
+    ? "Stable groundwater trend"
+    : "Insufficient groundwater data";
+  return {
+    ...input,
+    groundwaterStatus: critical ? "Critical" : hasTrendEvidence ? "Normal" : "Insufficient data",
+    groundwaterDirection: critical ? "Declining" : rising ? "Possible improvement" : stable ? "Stable" : "Not computed",
+    dashboardAction: critical ? "Yes" : "No",
+    dashboardMapCategory: category,
+    linearMethodCritical: linearCritical ? "Yes" : "No",
+    theilSenMethodCritical: theilCritical ? "Yes" : "No",
+    mannKendallMethodCritical: mannCritical ? "Yes" : "No",
+    linearMannKendallCritical: linearMannCritical ? "Yes" : "No",
+    theilSenMannKendallCritical: theilMannCritical ? "Yes" : "No",
+    linearSlopeFtPerWeek: linear,
+    senSlopeFtPerWeek: theil,
+    declineStrengthFtPerWeek: selectedSlope,
+    hasTrendEvidence,
+    oldConsumptionNoGroundwaterData: isYes(input.previousCriticalWard) && !hasTrendEvidence ? "Yes" : "No",
+  };
+}
+
+function methodVotesForCritical(critical = {}) {
+  return {
+    linear: isYes(critical.linearMethodCritical),
+    theil: isYes(critical.theilSenMethodCritical),
+    mann: isYes(critical.mannKendallMethodCritical),
+  };
+}
+
+function selectedGroundwaterMethodIsCritical(critical = {}, mode = groundwaterMethodMode) {
+  const votes = methodVotesForCritical(critical);
+  if (mode === "dashboard") return isYes(critical.dashboardAction) || critical.groundwaterStatus === "Critical" || critical.dashboardMapCategory === "Critical: Ward-average groundwater decline";
+  if (mode === "linear") return votes.linear;
+  if (mode === "theil") return votes.theil;
+  if (mode === "mann") return votes.mann;
+  if (mode === "linear_theil") return votes.linear && votes.theil;
+  if (mode === "linear_mann") return isYes(critical.linearMannKendallCritical) || (votes.linear && votes.mann);
+  if (mode === "theil_mann") return isYes(critical.theilSenMannKendallCritical) || (votes.theil && votes.mann);
+  if (mode === "all_three") return votes.linear && votes.theil && votes.mann;
+  return false;
+}
+
+function groundwaterTrendPointCount(critical = {}) {
+  const n = Number(critical.pointCount ?? critical.usableWeeklyValues ?? critical.weeklyPointsUsed ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function hasGroundwaterTrendEvidence(critical = {}) {
+  if (typeof critical.hasTrendEvidence === "boolean") return critical.hasTrendEvidence;
+  const linear = Number(critical.linearSlopeFtPerWeek);
+  const theil = Number(critical.senSlopeFtPerWeek);
+  return groundwaterTrendPointCount(critical) >= GROUNDWATER_MIN_SLOPE_WEEKS && (Number.isFinite(linear) || Number.isFinite(theil));
+}
+
+function isGroundwaterRiseWard(critical = {}) {
+  return critical.dashboardMapCategory === "Confirmed groundwater rise"
+    || critical.dashboardMapCategory === "Possible groundwater rise"
+    || critical.groundwaterDirection === "Improving"
+    || critical.groundwaterDirection === "Possible improvement"
+    || critical.groundwaterRiseOverride === "Yes";
+}
+
+function groundwaterWardStatusKey(wardNo) {
+  const critical = criticalGroundwaterByNo.get(normalizeWardNo(wardNo));
+  if (!critical) return "none";
+  if (isGroundwaterRiseWard(critical)) return "rise";
+  if (selectedGroundwaterMethodIsCritical(critical)) return "critical";
+  if (hasGroundwaterTrendEvidence(critical)) return "stable";
+  return "none";
+}
+
+function isAnalysisLens(value) {
+  return ["groundwater", "overall", "volumetric_deficit", "extraction", "pumping_stress", "consumption", "specific_capacity"].includes(value);
+}
+
+function pumpingWardSummaryForNo(wardNo) {
+  const raw = pumpingPerformanceWardSummaryByNo.get(normalizeWardNo(wardNo));
+  if (!raw) return null;
+  const totalPumpedVolumeM3 = numOrNull(raw.totalPumpedVolumeM3);
+  const medianSpecificCapacityScaled = numOrNull(raw.medianSpecificCapacityScaled);
+  const medianNormalizedDrawdownFtPerM3 = numOrNull(raw.medianNormalizedDrawdownFtPerM3);
+  const extractionP75M3 = numOrNull(pumpingPerformanceWardThresholds.extractionP75M3);
+  const specificCapacityP25Scaled = numOrNull(pumpingPerformanceWardThresholds.specificCapacityP25Scaled);
+  const normalizedDrawdownP75FtPerM3 = numOrNull(pumpingPerformanceWardThresholds.normalizedDrawdownP75FtPerM3);
+  return {
+    ...raw,
+    totalPumpedVolumeM3,
+    medianSpecificCapacityScaled,
+    medianNormalizedDrawdownFtPerM3,
+    criticalByExtraction: totalPumpedVolumeM3 != null && extractionP75M3 != null && totalPumpedVolumeM3 >= extractionP75M3,
+    criticalBySpecificCapacity: medianSpecificCapacityScaled != null && specificCapacityP25Scaled != null && medianSpecificCapacityScaled <= specificCapacityP25Scaled,
+    highNormalizedDrawdown: medianNormalizedDrawdownFtPerM3 != null && normalizedDrawdownP75FtPerM3 != null && medianNormalizedDrawdownFtPerM3 >= normalizedDrawdownP75FtPerM3,
+  };
+}
+
+function isPreviousConsumptionCriticalWard(wardNo) {
+  const c = criticalGroundwaterByNo.get(normalizeWardNo(wardNo));
+  return isYes(c?.previousCriticalWard) || isYes(c?.oldConsumptionNoGroundwaterData);
+}
+
+function wardVolumetricDeficit(wardNo) {
+  const local = volumetricDeficitByNo.get(normalizeWardNo(wardNo));
+  const feature = wards?.features?.find(f => normalizeWardNo(f.properties.ward_no) === normalizeWardNo(wardNo));
+  if (local) {
+    const slope = numOrNull(local.slopeFtPerWeek);
+    const durationDays = Math.max(numOrNull(local.durationDays) || 0, 30);
+    const areaKm2 = Number(feature?.properties?.area_km2 ?? 8);
+    if (!Number.isFinite(slope) || slope <= 0) return { ...local, deficitMl: 0, deficitM3: 0, deficitTankers: 0 };
+    const totalDropM = slope * (durationDays / 7) * 0.3048;
+    const deficitM3 = areaKm2 * 1000000 * totalDropM * 0.02;
+    return {
+      ...local,
+      deficitMl: deficitM3 / 1000,
+      deficitM3,
+      deficitTankers: deficitM3 / 12,
+      durationDays,
+    };
+  }
+  const ward = criticalGroundwaterByNo.get(normalizeWardNo(wardNo));
+  const rawMl = ward?.volumetric_deficit_ml ?? ward?.volumetricDeficitMl;
+  if (rawMl != null && Number.isFinite(Number(rawMl)) && Number(rawMl) > 0) return { deficitMl: Number(rawMl) };
+  const slope = Number(ward?.senSlopeFtPerWeek ?? ward?.linearSlopeFtPerWeek ?? 0);
+  if (!Number.isFinite(slope) || slope <= 0) return { deficitMl: 0 };
+  const areaKm2 = Number(feature?.properties?.area_km2 ?? 8);
+  const pointCount = Number(ward?.usableWeeklyValues ?? ward?.pointCount ?? 8);
+  const durationDays = Math.max(pointCount * 7, 30);
+  const totalDropM = slope * (durationDays / 7) * 0.3048;
+  return { deficitMl: (areaKm2 * 1000000 * totalDropM * 0.02) / 1000 };
+}
+
+function overallCriticalLensFlags(wardNo) {
+  const pumping = pumpingWardSummaryForNo(wardNo);
+  const vd = wardVolumetricDeficit(wardNo);
+  return {
+    groundwater: groundwaterWardStatusKey(wardNo) === "critical",
+    volumetric_deficit: vd.deficitMl >= 10,
+    extraction: Boolean(pumping?.criticalByExtraction),
+    pumping_stress: Boolean(pumping?.highNormalizedDrawdown),
+    specific_capacity: Boolean(pumping?.criticalBySpecificCapacity),
+  };
+}
+
+function mapAnalysisWardStatusKey(wardNo) {
+  if (currentLens === "overall") {
+    return Object.values(overallCriticalLensFlags(wardNo)).filter(Boolean).length >= 2 ? "critical" : "none";
+  }
+  if (currentLens === "consumption") return isPreviousConsumptionCriticalWard(wardNo) ? "critical" : "none";
+  if (currentLens === "volumetric_deficit") {
+    const vd = wardVolumetricDeficit(wardNo);
+    return vd.deficitMl >= 10 ? "critical" : vd.deficitMl > 0 ? "stable" : "none";
+  }
+  if (currentLens === "extraction") {
+    const pumping = pumpingWardSummaryForNo(wardNo);
+    if (!pumping) return "none";
+    return pumping.criticalByExtraction ? "critical" : "stable";
+  }
+  if (currentLens === "specific_capacity") {
+    const pumping = pumpingWardSummaryForNo(wardNo);
+    if (!pumping) return "none";
+    return pumping.criticalBySpecificCapacity ? "critical" : "stable";
+  }
+  if (currentLens === "pumping_stress") {
+    const pumping = pumpingWardSummaryForNo(wardNo);
+    if (!pumping) return "none";
+    return pumping.highNormalizedDrawdown ? "critical" : "stable";
+  }
+  return groundwaterWardStatusKey(wardNo);
+}
+
+function groundwaterMethodLabel() {
+  return ({
+    dashboard: "Linear + Mann-Kendall with Review",
+    linear: "Linear only",
+    theil: "Theil-Sen only",
+    mann: "Mann-Kendall only",
+    linear_theil: "Linear + Theil-Sen",
+    linear_mann: "Linear + Mann-Kendall",
+    theil_mann: "Theil-Sen + Mann-Kendall",
+    all_three: "All three",
+  })[groundwaterMethodMode] || "Linear + Mann-Kendall with Review";
+}
+
+function analysisLensLabel(value = currentLens) {
+  return ({
+    groundwater: "Groundwater Decline",
+    overall: "Common",
+    volumetric_deficit: "High Volumetric Deficit (ML)",
+    extraction: "High Extraction",
+    pumping_stress: "High Pumping Stress (Drawdown/m3)",
+    consumption: "Previous Consumption Criticality",
+    specific_capacity: "Low Specific Capacity",
+    coverage: "Sensor Coverage",
+    readings: "Reading Load",
+  })[value] || "Groundwater Decline";
+}
+
+function analysisCriticalLabel(value = currentLens) {
+  return ({
+    groundwater: "Critical: GW Decline",
+    overall: "Common (>= 2/5)",
+    volumetric_deficit: "Critical: High Volumetric Loss",
+    extraction: "Critical: High Extraction",
+    pumping_stress: "Critical: High Drawdown per m3",
+    consumption: "Previous Consumption Critical",
+    specific_capacity: "Critical: Low Specific Capacity",
+  })[value] || "Critical ward";
+}
+
+function groundwaterWardSummary(wardNo) {
+  const c = criticalGroundwaterByNo.get(normalizeWardNo(wardNo));
+  if (!c) return null;
+  const slope = Number.isFinite(Number(c.senSlopeFtPerWeek)) ? Number(c.senSlopeFtPerWeek) : Number(c.linearSlopeFtPerWeek);
+  return {
+    status: groundwaterWardStatusKey(wardNo),
+    category: c.dashboardMapCategory || c.groundwaterStatus || "Not classified",
+    direction: c.groundwaterDirection || "Not computed",
+    reason: c.updateReason || c.skippedReasonDetails || "",
+    points: groundwaterTrendPointCount(c),
+    slope: Number.isFinite(slope) ? slope : null,
+    previousCritical: isYes(c.previousCriticalWard) || isYes(c.oldConsumptionNoGroundwaterData),
   };
 }
 
@@ -95,14 +412,21 @@ function clearWardSelection() {
 }
 
 let currentShading = "with_data";
-let showAllSensors = false;
+let currentLens = "coverage";
+let wardStatusFilter = "";
+let sensorStatusFilter = "with_data";
+let groundwaterMethodMode = "dashboard";
 let charts = { water: null, discharge: null, modal: null };
 let currentSensorSeries = null;   // cached
 let selectedSensorUid = null;
 let currentRange = "1M";
 
-// ---------- Palette (choropleth: light -> dark teal) ----------
+// ---------- Palette (choropleth: light -> dark, distinct by lens) ----------
 const CHORO = ["#f0f9fb", "#d3ecf1", "#a8d8e2", "#79c1d1", "#4ea6bd", "#2f8ba3", "#1c6e88", "#0e5670"];
+const CRITICALITY_COLORS = { critical: "rgb(255, 0, 0)", rise: "rgb(0, 255, 0)", stable: "rgb(255, 255, 0)", none: "#e2e8f0" };
+const BASE_WARD_COLOR = { fill: "#a8d8e2", stroke: "#5a7a86", opacity: 0.22 };
+const SENSOR_COLORS = { with_data: "#0e7490", no_data: "#64748b" };
+const GROUNDWATER_MIN_SLOPE_WEEKS = 4;
 
 function choroColor(value, breaks) {
   if (value == null || value === 0) return "#e2e8ec";
@@ -133,10 +457,10 @@ async function boot() {
   wireToolbar();
   wireSearch();
   wireFilters();
-  wireLegend();
   wireDetailClose();
   try {
     await loadData();
+    updateMetrics();
     renderWards();
     renderSensors();
     document.getElementById("about-manifest").textContent =
@@ -150,18 +474,216 @@ async function boot() {
 }
 async function loadData() {
   console.info("[dashboard] fetching", { wards: urlOf("wards.geojson"), sensors: urlOf("sensors.json") });
-  const [ws, ss, mf] = await Promise.all([
+  const [ws, ss, mf, qs, analytics, qcPayload] = await Promise.all([
     fetch(urlOf("wards.geojson")).then(r => r.json()),
     fetch(urlOf("sensors.json")).then(r => r.json()),
     fetch(urlOf("manifest.json")).then(r => r.json()),
+    fetch("./data/session_quality_summary.json").then(r => r.ok ? r.json() : null).catch(() => null),
+    loadAnalyticsData(),
+    fetch("./data/sensor_qc.json").then(r => r.ok ? r.json() : null).catch(() => null),
   ]);
+  if (qcPayload && Array.isArray(qcPayload.sensors)) {
+    for (const row of qcPayload.sensors) sensorQcByUid.set(String(row.uid), row);
+  }
   wards = ws;
-  sensors = ss;
+  sensors = mergeSensorInventory(ss, analytics.fullSensors || []);
   manifest = mf;
+  sessionSummary = qs;
+  criticalGroundwaterByNo = new Map((analytics.criticalGroundwater?.wards || [])
+    .map(calculateGroundwaterCriticality)
+    .map(item => [normalizeWardNo(item.wardNo), item])
+    .filter(([k]) => k != null));
+  pumpingPerformanceWardSummaryByNo = new Map((analytics.pumpingPerformance?.wards || []).map(item => [normalizeWardNo(item.wardNo), item]).filter(([k]) => k != null));
+  pumpingPerformanceWardThresholds = analytics.pumpingPerformance?.thresholds || {};
+  volumetricDeficitByNo = new Map((analytics.volumetricDeficit?.wards || []).map(item => [normalizeWardNo(item.wardNo), item]).filter(([k]) => k != null));
+  analyticsLoaded = criticalGroundwaterByNo.size > 0;
+  if (analyticsLoaded) currentLens = "groundwater";
   console.info("[dashboard] loaded", { wards: wards.features.length, sensors: sensors.length, sensorsWithData: sensors.filter(s => s.has_data).length, manifest });
   for (const s of sensors) {
     sensorsByUid[s.uid] = s;
     if (s.ward_no != null) (sensorsByWard[s.ward_no] = sensorsByWard[s.ward_no] || []).push(s);
+  }
+  recomputeWardSensorCounts();
+  syncAnalyticsControls();
+}
+
+async function loadAnalyticsData() {
+  const fetchJson = async (path, fallback) => {
+    try {
+      const res = await fetch(`${ANALYTICS_API_BASE}${path}`);
+      return res.ok ? await res.json() : fallback;
+    } catch (err) {
+      console.warn("[dashboard] analytics API unavailable", path, err);
+      return fallback;
+    }
+  };
+  const fetchLocalJson = async (path, fallback) => {
+    try {
+      const res = await fetch(path);
+      return res.ok ? await res.json() : fallback;
+    } catch (err) {
+      console.warn("[dashboard] local analytics asset unavailable", path, err);
+      return fallback;
+    }
+  };
+  const [sensorPayload, criticalGroundwater, pumpingPerformance] = await Promise.all([
+    fetchJson("/api/sensors?source=kh", { sensors: [] }),
+    fetchJson("/api/critical-wards-groundwater", { wards: [] }),
+    fetchJson("/api/pumping-performance/wards?cache_v=pump-kh-cycles-20260831-1", { wards: [], thresholds: {} }),
+  ]);
+  const localCriticalGroundwater = await fetchLocalJson("./data/critical_groundwater_ward_summary.json", { wards: [] });
+  const hasActiveGroundwaterClasses = (criticalGroundwater?.wards || []).some(item => (
+    isYes(item.dashboardAction)
+    || item.groundwaterStatus === "Critical"
+    || item.dashboardMapCategory === "Critical: Ward-average groundwater decline"
+    || item.dashboardMapCategory === "Confirmed groundwater rise"
+    || item.dashboardMapCategory === "Possible groundwater rise"
+    || item.dashboardMapCategory === "Stable groundwater trend"
+  ));
+  const activeCriticalGroundwater = hasActiveGroundwaterClasses ? criticalGroundwater : localCriticalGroundwater;
+  const localPumpingPerformance = pumpingPerformance?.wards?.length
+    ? pumpingPerformance
+    : await fetchLocalJson("./data/pumping_performance_ward_summary.json", { wards: [], thresholds: {} });
+  const volumetricDeficit = await fetchLocalJson("./data/ward_volumetric_deficit_summary.json", { wards: [] });
+  return { fullSensors: sensorPayload.sensors || [], criticalGroundwater: activeCriticalGroundwater, pumpingPerformance: localPumpingPerformance, volumetricDeficit };
+}
+
+function normalizeApiSensor(s) {
+  return {
+    uid: String(s.uid || ""),
+    lat: s.lat,
+    lng: s.lng,
+    ward_no: normalizeWardNo(s.ward_no ?? s.wardNo),
+    ward_name: s.ward_name ?? s.wardName ?? null,
+    motor_hp: s.motor_hp ?? s.motorHp ?? null,
+    borewell_depth: s.borewell_depth ?? s.borewellDepth ?? null,
+    pump_name: s.pump_name ?? s.pumpName ?? "",
+    has_data: Boolean(s.has_data ?? s.hasData),
+    data_category: s.data_category ?? s.dataCategory ?? (s.has_data || s.hasData ? "both" : "none"),
+    reading_count: Number(s.reading_count ?? s.totalReadings ?? s.waterReadings ?? 0),
+    first_data_at: s.first_data_at ?? s.firstDataAt ?? null,
+    last_data_at: s.last_data_at ?? s.lastDataAt ?? null,
+  };
+}
+
+function mergeSensorInventory(localSensors, apiSensors) {
+  const merged = new Map();
+  for (const s of apiSensors.map(normalizeApiSensor)) {
+    if (!s.uid) continue;
+    merged.set(s.uid, s);
+  }
+  for (const local of localSensors.map(normalizeApiSensor)) {
+    const existing = merged.get(local.uid) || {};
+    merged.set(local.uid, {
+      ...existing,
+      ...local,
+      has_data: local.has_data || existing.has_data || false,
+      data_category: local.data_category || existing.data_category || "none",
+      reading_count: local.reading_count || existing.reading_count || 0,
+      first_data_at: local.first_data_at || existing.first_data_at || null,
+      last_data_at: local.last_data_at || existing.last_data_at || null,
+    });
+  }
+  const out = [...merged.values()].filter(s => s.uid);
+  assignMissingSensorWards(out);
+  return out;
+}
+
+function assignMissingSensorWards(items) {
+  if (!wards?.features?.length) return;
+  const features = wards.features.map(f => ({ feature: f, bounds: featureBounds(f) }));
+  for (const s of items) {
+    if (s.ward_no != null || s.lat == null || s.lng == null) continue;
+    const hit = features.find(({ feature, bounds }) => pointInBounds(s.lng, s.lat, bounds) && pointInFeature(s.lng, s.lat, feature));
+    if (hit) {
+      s.ward_no = normalizeWardNo(hit.feature.properties.ward_no);
+      s.ward_name = hit.feature.properties.ward_name;
+    }
+  }
+}
+
+function featureBounds(feature) {
+  const coords = [];
+  const walk = arr => Array.isArray(arr?.[0]) && typeof arr[0][0] === "number" ? coords.push(...arr) : arr.forEach(walk);
+  walk(feature.geometry.coordinates);
+  return coords.reduce((b, [lng, lat]) => ({
+    minLng: Math.min(b.minLng, lng), maxLng: Math.max(b.maxLng, lng),
+    minLat: Math.min(b.minLat, lat), maxLat: Math.max(b.maxLat, lat),
+  }), { minLng: Infinity, maxLng: -Infinity, minLat: Infinity, maxLat: -Infinity });
+}
+
+function pointInBounds(lng, lat, b) {
+  return lng >= b.minLng && lng <= b.maxLng && lat >= b.minLat && lat <= b.maxLat;
+}
+
+function pointInRing(lng, lat, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+    const intersect = ((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function pointInFeature(lng, lat, feature) {
+  const polys = feature.geometry.type === "MultiPolygon" ? feature.geometry.coordinates : [feature.geometry.coordinates];
+  return polys.some(poly => pointInRing(lng, lat, poly[0]) && !poly.slice(1).some(hole => pointInRing(lng, lat, hole)));
+}
+
+function recomputeWardSensorCounts() {
+  for (const f of wards.features) {
+    const list = sensorsByWard[normalizeWardNo(f.properties.ward_no)] || [];
+    f.properties.sensor_total = list.length;
+    f.properties.sensor_with_data = list.filter(s => s.has_data).length;
+  }
+}
+
+function syncAnalyticsControls() {
+  const lensSelect = document.getElementById("analysis-lens");
+  if (lensSelect) lensSelect.value = currentLens;
+  const methodSelect = document.getElementById("groundwater-method");
+  if (methodSelect) methodSelect.value = groundwaterMethodMode;
+  const methodRow = document.getElementById("groundwater-method-row");
+  if (methodRow) methodRow.hidden = !(analyticsLoaded && currentLens === "groundwater");
+  const note = document.getElementById("analytics-note");
+  if (note) note.textContent = analyticsLoaded
+    ? "Earlier-dashboard ward criticality and the full 1,594-device inventory are loaded. Raw water-level/discharge series are not imported here."
+    : "Earlier-dashboard analytics are unavailable right now, so the dashboard is using local coverage and reading-load lenses.";
+}
+
+function activeWardPropsForDetail() {
+  if (selectedWardNo == null || !wards) return null;
+  return wards.features.find(f => normalizeWardNo(f.properties.ward_no) === normalizeWardNo(selectedWardNo))?.properties || null;
+}
+
+function updateMetrics() {
+  const number = v => v == null ? "—" : Number(v).toLocaleString("en-IN");
+  const reporting = sensors.filter(s => s && s.has_data).length;
+  document.getElementById("metric-total-sensors").textContent = number(reporting);
+  const wardsWithData = wards?.features?.filter(f => (f.properties.sensor_with_data || 0) > 0).length || 0;
+  document.getElementById("metric-wards").textContent = `${number(wardsWithData)}/${number(wards?.features?.length || manifest?.wards || 0)}`;
+  updateLensCounts();
+}
+
+function updateLensCounts() {
+  let critical = 0, rise = 0, stable = 0;
+  if (wards?.features) {
+    for (const f of wards.features) {
+      const key = wardStatusKey(f.properties);
+      if (key === "critical") critical++;
+      else if (key === "rise") rise++;
+      else if (key === "stable") stable++;
+    }
+  }
+  const num = v => Number(v).toLocaleString("en-IN");
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = num(val); };
+  set("metric-critical", critical);
+  set("metric-rise", rise);
+  set("metric-stable", stable);
+  const lbl = document.getElementById("metric-critical-label");
+  if (lbl && typeof analysisLensLabel === "function") {
+    lbl.textContent = `Critical · ${analysisLensLabel()}`;
   }
 }
 
@@ -193,6 +715,7 @@ function renderWards() {
       const tip = `
         <div class="name">Ward ${p.ward_no} — ${p.ward_name}</div>
         <div class="kv">Sensors with data: <b>${p.sensor_with_data || 0}</b> / ${p.sensor_total || 0}</div>
+        <div class="kv">Map status: <b>${wardStatusLabel(wardStatusKey(p))}</b></div>
         <div class="kv">Population (2026 proj): ${p.population_2026 ? Math.round(p.population_2026).toLocaleString("en-IN") : "—"}</div>
         <div class="kv">Area: ${p.area_km2 ? p.area_km2.toFixed(1) + " km²" : "—"}</div>
       `;
@@ -215,22 +738,27 @@ function shadingValue(feature) {
   return null;
 }
 
+function wardStatusLabel(key) {
+  return ({ critical: "Critical", rise: "Rising / improving", stable: "Stable", high: "High coverage", low: "Needs coverage", none: "No sensors" })[key] || "All wards";
+}
+
 // ---------- Sensors ----------
 function renderSensors() {
   if (currentSensorMarkers) currentSensorMarkers.remove();
   currentSensorMarkers = L.layerGroup();
-  const visible = sensors.filter(s => s.lat != null && s.lng != null && (showAllSensors || s.has_data) && (selectedWardNo == null || s.ward_no === selectedWardNo));
+  const visible = filteredSensors();
   for (const s of visible) {
     const isSel = selectedSensorUid === s.uid;
+    const status = sensorStatusKey(s);
     const m = L.circleMarker([s.lat, s.lng], {
       radius: isSel ? 11 : 6,
       color: isSel ? "#f59e0b" : "#ffffff",
       weight: isSel ? 3 : 1.6,
-      fillColor: s.has_data ? "#dc2626" : "#94a3b8",
+      fillColor: SENSOR_COLORS[status],
       fillOpacity: 0.95,
     });
     const wardLabel = s.ward_no != null ? `Ward ${s.ward_no} — ${s.ward_name || ""}` : "Unassigned";
-    m.bindTooltip(`<b>${s.uid}</b><br/>${wardLabel}${s.has_data ? "" : " · <i>no data</i>"}`, { className: "sensor-tip", direction: "top" });
+    m.bindTooltip(`<b>${s.uid}</b><br/>${wardLabel}<br/>${sensorStatusLabel(status)}${s.last_data_at ? " · " + fmtDate(s.last_data_at) : ""}`, { className: "sensor-tip", direction: "top" });
     m.on("click", () => openSensorDetail(s.uid));
     currentSensorMarkers.addLayer(m);
     if (isSel) m.bringToFront();
@@ -238,12 +766,86 @@ function renderSensors() {
   currentSensorMarkers.addTo(map);
 }
 
+function sensorStatusLabel(key) {
+  return ({ with_data: "Reporting", no_data: "No data" })[key] || "Sensor";
+}
+
+function sensorFilterMatch(s) {
+  if (sensorStatusFilter === "all") return true;
+  if (sensorStatusFilter === "with_data") return !!s.has_data;
+  return sensorStatusKey(s) === sensorStatusFilter;
+}
+
+function filteredSensors() {
+  return sensors.filter(s => {
+    if (s.lat == null || s.lng == null) return false;
+    if (selectedWardNo != null && s.ward_no !== selectedWardNo) return false;
+    if (wardStatusFilter) {
+      const wardProps = wards?.features?.find(f => f.properties.ward_no === s.ward_no)?.properties;
+      if (!wardProps || wardStatusKey(wardProps) !== wardStatusFilter) return false;
+    }
+    return sensorFilterMatch(s);
+  });
+}
+
+function visibleWardFeaturesForLegend() {
+  if (!wards?.features) return [];
+  return wards.features.filter(f => {
+    const wardNo = normalizeWardNo(f.properties.ward_no);
+    if (selectedWardNo != null && wardNo !== normalizeWardNo(selectedWardNo)) return false;
+    if (highlightedWardNos.size > 0 && !highlightedWardNos.has(wardNo)) return false;
+    if (wardStatusFilter && wardStatusKey(f.properties) !== wardStatusFilter) return false;
+    return true;
+  });
+}
+
 // ---------- Legend ----------
 function buildLegend() {
   const el = document.getElementById("legend-scale");
-  if (el) el.style.display = "none";
+  if (el) {
+    el.style.display = isAnalysisLens(currentLens) ? "none" : "flex";
+    el.innerHTML = CHORO.map(c => `<span style="background:${c}"></span>`).join("");
+  }
+  const items = document.getElementById("legend-items");
+  if (items) {
+    const visibleWards = visibleWardFeaturesForLegend();
+    const wardItems = isAnalysisLens(currentLens) && analyticsLoaded
+      ? [
+          ["critical", CRITICALITY_COLORS.critical, analysisCriticalLabel()],
+          ["rise", CRITICALITY_COLORS.rise, "Groundwater Rise"],
+          ["stable", CRITICALITY_COLORS.stable, currentLens === "groundwater" ? "Stable groundwater trend" : "Below threshold"],
+          ["none", BASE_WARD_COLOR.fill, "Other wards"],
+        ]
+          .filter(([key]) => key !== "rise" || currentLens === "groundwater")
+          .filter(([key]) => key !== "stable" || !["overall", "consumption"].includes(currentLens))
+          .filter(([key]) => visibleWards.some(f => wardStatusKey(f.properties) === key))
+          .map(([, color, label]) => [color, label])
+      : visibleWards.some(f => (currentLens === "readings" ? wardReadingLoad(f.properties) : (f.properties.sensor_with_data || 0)) > 0)
+      ? [
+          [CHORO[1], currentLens === "readings" ? "Lower reading load" : "Lower coverage"],
+          [CHORO[6], currentLens === "readings" ? "Higher reading load" : "Higher coverage"],
+        ]
+      : [];
+    const visibleSensorStatuses = new Set(filteredSensors().map(sensorStatusKey));
+    const sensorItems = [
+      ["with_data", SENSOR_COLORS.with_data, "Reporting sensor"],
+      ["no_data", SENSOR_COLORS.no_data, "No-data sensor"],
+    ]
+      .filter(([key]) => visibleSensorStatuses.has(key))
+      .map(([, color, label]) => [color, label]);
+    items.innerHTML = [...wardItems, ...sensorItems]
+      .map(([color, label]) => `<div class="legend-item"><span style="background:${color}"></span>${label}</div>`)
+      .join("");
+  }
   const cap = document.querySelector(".legend-caption");
-  if (cap) cap.textContent = selectedWardNo != null ? "Ward isolated — click map background to clear" : "Click a ward to isolate";
+  if (cap) {
+    const lensLabel = isAnalysisLens(currentLens)
+      ? `Wards classified by ${analysisLensLabel()}${currentLens === "groundwater" ? ` (${groundwaterMethodLabel()})` : ""}`
+      : ({ coverage: "Wards shaded by reporting sensor coverage", readings: "Wards shaded by reading volume" })[currentLens];
+    cap.textContent = selectedWardNo != null
+      ? "Ward isolated — click map background to clear"
+      : quickViewLabel || lensLabel;
+  }
 }
 
 // ---------- Toolbar / overlays ----------
@@ -356,27 +958,98 @@ function runSearch(q, container) {
 
 // ---------- Filters ----------
 function wireFilters() {
+  const lensSelect = document.getElementById("analysis-lens");
+  if (lensSelect) {
+    lensSelect.addEventListener("change", () => {
+      currentLens = lensSelect.value || "groundwater";
+      syncAnalyticsControls();
+      if (wardLayer) wardLayer.setStyle(defaultWardStyle);
+      updateMetrics();
+      buildLegend();
+    });
+  }
+  const methodSelect = document.getElementById("groundwater-method");
+  if (methodSelect) {
+    methodSelect.addEventListener("change", () => {
+      groundwaterMethodMode = methodSelect.value || "dashboard";
+      if (wardLayer) wardLayer.setStyle(defaultWardStyle);
+      updateMetrics();
+      buildLegend();
+      if (!document.getElementById("detail").hidden && activeWardPropsForDetail()) {
+        openWardDetail(activeWardPropsForDetail());
+      }
+    });
+  }
+  document.querySelectorAll("[data-ward-status]").forEach(chip => {
+    chip.addEventListener("click", () => {
+      wardStatusFilter = chip.dataset.wardStatus;
+      document.querySelectorAll("[data-ward-status]").forEach(c => c.classList.toggle("active", c === chip));
+      if (wardLayer) wardLayer.setStyle(defaultWardStyle);
+      renderSensors();
+      buildLegend();
+    });
+  });
+  document.querySelectorAll("[data-sensor-status]").forEach(chip => {
+    chip.addEventListener("click", () => {
+      sensorStatusFilter = chip.dataset.sensorStatus;
+      document.querySelectorAll("[data-sensor-status]").forEach(c => c.classList.toggle("active", c === chip));
+      renderSensors();
+      buildLegend();
+    });
+  });
+  const tvToggle = document.getElementById("tv-mode-toggle");
+  if (tvToggle) {
+    tvToggle.addEventListener("change", () => {
+      document.body.classList.toggle("tv-mode", tvToggle.checked);
+      setTimeout(() => map.invalidateSize(), 120);
+    });
+  }
   document.querySelectorAll("[data-quick]").forEach(chip => {
     chip.addEventListener("click", () => {
       const which = chip.dataset.quick;
       closeAllOverlays();
-      if (which === "reset") { map.setView([12.972, 77.594], 11); return; }
+      if (which === "reset") {
+        selectedWardNo = null;
+        selectedSensorUid = null;
+        highlightedWardNos = new Set();
+        quickViewLabel = "";
+        wardStatusFilter = "";
+        sensorStatusFilter = "with_data";
+        currentLens = analyticsLoaded ? "groundwater" : "coverage";
+        document.querySelectorAll("[data-ward-status]").forEach(c => c.classList.toggle("active", c.dataset.wardStatus === ""));
+        document.querySelectorAll("[data-sensor-status]").forEach(c => c.classList.toggle("active", c.dataset.sensorStatus === "with_data"));
+        syncAnalyticsControls();
+        if (wardLayer) wardLayer.setStyle(defaultWardStyle);
+        renderSensors();
+        buildLegend();
+        map.setView([12.972, 77.594], 11);
+        return;
+      }
+      if (which === "all_wards") {
+        highlightedWardNos = new Set(wards.features.map(f => normalizeWardNo(f.properties.ward_no)));
+        quickViewLabel = "All wards highlighted";
+        if (wardLayer) wardLayer.setStyle(defaultWardStyle);
+        buildLegend();
+        map.fitBounds(wardLayer.getBounds(), { padding: [40, 40] });
+        return;
+      }
       const filtered = wards.features
         .filter(f => which === "no_sensors" ? (f.properties.sensor_with_data || 0) === 0 : (f.properties.sensor_with_data || 0) > 0)
         .sort((a, b) => which === "max_sensors" ? (b.properties.sensor_with_data || 0) - (a.properties.sensor_with_data || 0) : (a.properties.sensor_with_data || 0) - (b.properties.sensor_with_data || 0));
       const top = filtered.slice(0, which === "no_sensors" ? filtered.length : 10);
+      highlightedWardNos = new Set(top.map(f => normalizeWardNo(f.properties.ward_no)));
+      quickViewLabel = which === "max_sensors"
+        ? "Highlighted: top 10 wards by sensor count"
+        : which === "min_sensors"
+        ? "Highlighted: 10 wards with fewest sensors"
+        : "Highlighted: wards with no sensors";
+      if (wardLayer) wardLayer.setStyle(defaultWardStyle);
+      buildLegend();
       if (top.length && top[0].properties.centroid) {
         const bounds = L.latLngBounds(top.map(f => [f.properties.centroid[1], f.properties.centroid[0]]));
         map.fitBounds(bounds, { padding: [40, 40] });
       }
     });
-  });
-}
-
-function wireLegend() {
-  document.getElementById("show-all-sensors").addEventListener("change", e => {
-    showAllSensors = e.target.checked;
-    renderSensors();
   });
 }
 
@@ -388,17 +1061,29 @@ function openWardDetail(p, feat) {
   title.innerHTML = `<div class="kicker">Ward ${p.ward_no}</div><h2>${p.ward_name || "—"}</h2>`;
   const list = (sensorsByWard[p.ward_no] || []).sort((a, b) => (b.has_data - a.has_data) || (a.uid > b.uid ? 1 : -1));
   const withData = list.filter(s => s.has_data).length;
+  const noData = list.length - withData;
+  const gw = groundwaterWardSummary(p.ward_no);
   const fmtInt = v => v == null ? "—" : Math.round(v).toLocaleString("en-IN");
+  const fmtSlope = v => v == null ? "—" : `${v.toFixed(3)} ft/week`;
   const fmtMm = v => v == null ? "—" : v.toLocaleString("en-IN", { maximumFractionDigits: 0 }) + " mm";
   body.innerHTML = `
     <div class="stat-grid">
       <div class="stat-card"><div class="stat-label">Sensors with data</div><div class="stat-value">${withData}</div><div class="stat-sub">out of ${list.length} total</div></div>
+      <div class="stat-card"><div class="stat-label">Ward status</div><div class="stat-value small">${wardStatusLabel(wardStatusKey(p))}</div><div class="stat-sub">${currentLens === "groundwater" ? groundwaterMethodLabel() : "Current map lens"}</div></div>
+      <div class="stat-card"><div class="stat-label">No-data devices</div><div class="stat-value small">${noData}</div><div class="stat-sub">from full inventory</div></div>
+      ${gw ? `<div class="stat-card"><div class="stat-label">Groundwater</div><div class="stat-value small">${wardStatusLabel(gw.status)}</div><div class="stat-sub">${groundwaterMethodLabel()}</div></div>` : ""}
+      ${gw ? `<div class="stat-card"><div class="stat-label">Slope</div><div class="stat-value small">${fmtSlope(gw.slope)}</div><div class="stat-sub">${gw.points} weekly values</div></div>` : ""}
       <div class="stat-card"><div class="stat-label">Area</div><div class="stat-value small">${p.area_km2 ? p.area_km2.toFixed(2) + " km²" : "—"}</div></div>
 <!-- Rainfall stat card hidden until KWRIS+KSNDMC pipeline is finalised. Re-enable by restoring this line. -->
       <div class="stat-card"><div class="stat-label">Population 2001</div><div class="stat-value small">${fmtInt(p.population_2001)}</div><div class="stat-sub">Census</div></div>
       <div class="stat-card"><div class="stat-label">Population 2011</div><div class="stat-value small">${fmtInt(p.population_2011)}</div><div class="stat-sub">Census</div></div>
       <div class="stat-card"><div class="stat-label">Projected 2026</div><div class="stat-value small">${fmtInt(p.population_2026)}</div><div class="stat-sub">CAGR from 2001–10</div></div>
     </div>
+    ${gw ? `<div class="criticality-summary">
+      <div class="section-title">Groundwater criticality</div>
+      <div class="criticality-line"><b>${gw.category}</b> · ${gw.direction}${gw.previousCritical ? " · Previous consumption-critical ward" : ""}</div>
+      ${gw.reason ? `<div class="criticality-note">${gw.reason}</div>` : ""}
+    </div>` : ""}
     <div class="section-title">Sensors in this ward (${list.length})</div>
     <div class="uid-list" id="ward-uid-list"></div>
   `;
@@ -410,7 +1095,8 @@ function openWardDetail(p, feat) {
       const row = document.createElement("div");
       row.className = "uid-item" + (selectedSensorUid === s.uid ? " selected" : "");
       row.dataset.uid = s.uid;
-      row.innerHTML = `<span class="uid-mono">${s.uid}</span><span class="uid-tag ${s.has_data ? "data" : "nodata"}">${s.has_data ? "data" : "no data"}</span>`;
+      const status = sensorStatusKey(s);
+      row.innerHTML = `<span class="uid-mono">${s.uid}</span><span class="uid-tag ${status}">${status === "with_data" ? "reporting" : "no data"}</span>`;
       row.onclick = () => openSensorDetail(s.uid);
       ul.appendChild(row);
     });
@@ -439,6 +1125,7 @@ async function openSensorDetail(uid) {
       <div class="stat-card"><div class="stat-label">Motor HP</div><div class="stat-value small">${s.motor_hp != null ? s.motor_hp : "—"}</div></div>
       <div class="stat-card"><div class="stat-label">Borewell depth</div><div class="stat-value small">${s.borewell_depth != null ? s.borewell_depth + " ft" : "—"}</div></div>
       <div class="stat-card"><div class="stat-label">Readings</div><div class="stat-value small">${(s.reading_count || 0).toLocaleString("en-IN")}</div></div>
+      <div class="stat-card"><div class="stat-label">Status</div><div class="stat-value small">${sensorStatusLabel(sensorStatusKey(s))}</div></div>
       <div class="stat-card"><div class="stat-label">First reading</div><div class="stat-value small">${fmtDate(s.first_data_at)}</div></div>
       <div class="stat-card"><div class="stat-label">Last reading</div><div class="stat-value small">${fmtDate(s.last_data_at)}</div></div>
     </div>

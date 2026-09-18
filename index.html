@@ -18,6 +18,30 @@
   <div class="brand-sub">Indian Institute of Science · for BWSSB</div>
 </div>
 
+<!-- HIGH-SIGNAL SNAPSHOT STRIP -->
+<div id="status-strip" class="floating" aria-live="polite">
+  <div class="metric-card">
+    <div class="metric-value" id="metric-total-sensors">—</div>
+    <div class="metric-label">Total sensors</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-value" id="metric-wards">—</div>
+    <div class="metric-label">Wards covered</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-value metric-critical" id="metric-critical">—</div>
+    <div class="metric-label" id="metric-critical-label">Critical wards</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-value metric-rise" id="metric-rise">—</div>
+    <div class="metric-label">Rising</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-value metric-stable" id="metric-stable">—</div>
+    <div class="metric-label">Stable</div>
+  </div>
+</div>
+
 <!-- TOP-RIGHT ACTION BAR -->
 <button id="clear-filter-chip" class="floating clear-filter-chip" hidden title="Clear selection (Esc)"><svg viewBox="0 0 24 24" width="16" height="16" style="vertical-align:middle;margin-right:6px"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></svg>Clear selection</button>
 
@@ -35,14 +59,8 @@
 
 <!-- BOTTOM-RIGHT LEGEND & LAYER TOGGLE -->
 <div id="legend" class="floating">
-  <div class="legend-row">
-    <label class="switch">
-      <input type="checkbox" id="show-all-sensors" />
-      <span class="track"><span class="thumb"></span></span>
-    </label>
-    <span class="switch-label">Show sensors with no data</span>
-  </div>
   <div class="legend-scale" id="legend-scale"></div>
+  <div id="legend-items" class="legend-items"></div>
   <div class="legend-caption">Wards shaded by sensor count</div>
 </div>
 
@@ -66,15 +84,68 @@
       <button class="close-btn" data-close="filter-overlay">×</button>
     </div>
     <div class="filter-section">
-      <div class="filter-label">Notes</div>
-      <div style="font-size:12.5px;color:#5a6472;line-height:1.5">All wards are shown in one uniform teal. Clicking a ward isolates it; other wards and their sensors fade out. Click the map background or the close button to clear.</div>
+      <div class="filter-label">Map lens</div>
+      <div class="method-row lens-row">
+        <label for="analysis-lens">Analysis lens</label>
+        <select id="analysis-lens">
+          <option value="groundwater">Groundwater Decline</option>
+          <option value="overall">Common</option>
+          <option value="volumetric_deficit">High Volumetric Deficit (ML)</option>
+          <option value="extraction">High Extraction</option>
+          <option value="pumping_stress">High Pumping Stress (Drawdown/m3)</option>
+          <option value="consumption">Previous Consumption Criticality</option>
+          <option value="specific_capacity">Low Specific Capacity</option>
+        </select>
+      </div>
+      <div class="filter-note" id="analytics-note">Groundwater criticality uses the earlier dashboard API when available; no raw water-level or discharge series are imported.</div>
+      <div class="method-row" id="groundwater-method-row" hidden>
+        <label for="groundwater-method">Trend method</label>
+        <select id="groundwater-method">
+          <option value="dashboard">Linear + Mann-Kendall with Review</option>
+          <option value="linear">Linear only</option>
+          <option value="theil">Theil-Sen only</option>
+          <option value="mann">Mann-Kendall only</option>
+          <option value="linear_theil">Linear + Theil-Sen</option>
+          <option value="linear_mann">Linear + Mann-Kendall</option>
+          <option value="theil_mann">Theil-Sen + Mann-Kendall</option>
+          <option value="all_three">All three</option>
+        </select>
+      </div>
+    </div>
+    <div class="filter-section">
+      <div class="filter-label">Ward status</div>
+      <div class="chip-group" id="ward-status-controls">
+        <button class="chip active" data-ward-status="">All wards</button>
+        <button class="chip critical-chip" data-ward-status="critical">Critical</button>
+        <button class="chip rise-chip" data-ward-status="rise">Rising</button>
+        <button class="chip stable-chip" data-ward-status="stable">Stable</button>
+      </div>
+    </div>
+    <div class="filter-section">
+      <div class="filter-label">Sensor status</div>
+      <div class="chip-group" id="sensor-status-controls">
+        <button class="chip active" data-sensor-status="with_data">Reporting</button>
+        <button class="chip" data-sensor-status="no_data">No data</button>
+        <button class="chip" data-sensor-status="all">All</button>
+      </div>
+    </div>
+    <div class="filter-section compact-option">
+      <div>
+        <div class="filter-label">Presentation</div>
+        <div class="filter-note">Use TV mode for large-screen reviews and control-room display.</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="tv-mode-toggle" />
+        <span class="track"><span class="thumb"></span></span>
+      </label>
     </div>
     <div class="filter-section">
       <div class="filter-label">Quick views</div>
       <div class="chip-group vertical">
         <button class="chip" data-quick="max_sensors">Top 10 wards by sensor count</button>
-        <button class="chip" data-quick="min_sensors">Wards with fewest sensors</button>
+        <button class="chip" data-quick="min_sensors">10 wards with fewest sensors</button>
         <button class="chip" data-quick="no_sensors">Wards with no sensors</button>
+        <button class="chip" data-quick="all_wards">Highlight all wards</button>
         <button class="chip" data-quick="reset">Reset view</button>
       </div>
     </div>
