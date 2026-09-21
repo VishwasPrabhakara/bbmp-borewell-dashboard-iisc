@@ -121,6 +121,14 @@ const LINEAR_DECLINE_THRESHOLD_FT_PER_WEEK = 0.1;
 const TREND_SIGNIFICANCE_ALPHA = 0.05;
 const GROUNDWATER_MIN_MK_WEEKS_MODERN = 30;
 const GROUNDWATER_MIN_MK_WEEKS_LEGACY = 8;
+const PREVIOUS_CONSUMPTION_CRITICAL_WARDS = new Set([
+  48, 33, 13, 122, 102, 161, 22, 195, 127, 116,
+  15, 183, 74, 37, 68, 31, 19, 187, 43, 28,
+  123, 134, 14, 130, 69, 32, 57, 186, 189, 190,
+  163, 39, 185, 124, 10, 156, 103, 71, 148, 128,
+  81, 21, 6, 75, 49, 171, 30, 70, 126, 36,
+  8, 133, 131, 97, 121, 101, 164, 18, 144, 40
+]);
 
 function numOrNull(value) {
   const n = Number(value);
@@ -284,6 +292,8 @@ function pumpingWardSummaryForNo(wardNo) {
 }
 
 function isPreviousConsumptionCriticalWard(wardNo) {
+  const normalized = normalizeWardNo(wardNo);
+  if (PREVIOUS_CONSUMPTION_CRITICAL_WARDS.has(normalized)) return true;
   const c = criticalGroundwaterByNo.get(normalizeWardNo(wardNo));
   return isYes(c?.previousCriticalWard) || isYes(c?.oldConsumptionNoGroundwaterData);
 }
@@ -429,7 +439,7 @@ function groundwaterWardSummary(wardNo) {
     reason: c.updateReason || c.skippedReasonDetails || "",
     points: groundwaterTrendPointCount(c),
     slope: Number.isFinite(slope) ? slope : null,
-    previousCritical: isYes(c.previousCriticalWard) || isYes(c.oldConsumptionNoGroundwaterData),
+    previousCritical: isPreviousConsumptionCriticalWard(wardNo),
   };
 }
 
