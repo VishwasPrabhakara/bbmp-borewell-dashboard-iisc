@@ -349,8 +349,8 @@ function mapAnalysisWardStatusKey(wardNo) {
     if (!cs) return "none";
     const cat = cs.stressCategory || "";
     if (cat.startsWith("Critical")) return "critical";
-    if (cat.startsWith("Elevated")) return "rise"; // reuse styling — actually treat as intermediate
-    if (cat.startsWith("Below")) return "stable"; // recovered
+    if (cat.startsWith("Elevated")) return "rise";
+    if (cat.startsWith("Normal") || cat.startsWith("Below")) return "stable";
     return "none";
   }
   if (currentLens === "specific_capacity") {
@@ -563,8 +563,9 @@ async function loadData() {
   sensors = mergeSensorInventory(ss, analytics.fullSensors || []);
   manifest = mf;
   sessionSummary = qs;
-    currentStressByNo = new Map((analytics.currentStress?.wards || [])
-    .map(w => [String(w.wardNo), w]));
+  currentStressByNo = new Map((analytics.currentStress?.wards || [])
+    .map(w => [normalizeWardNo(w.wardNo), w])
+    .filter(([k]) => k != null));
   criticalGroundwaterByNo = new Map((analytics.criticalGroundwater?.wards || [])
     .map(calculateGroundwaterCriticality)
     .map(item => [normalizeWardNo(item.wardNo), item])
@@ -916,6 +917,9 @@ function shadingValue(feature) {
 }
 
 function wardStatusLabel(key) {
+  if (currentLens === "current_stress") {
+    return ({ critical: "Critical current stress", rise: "Elevated current stress", stable: "Normal / recovered", none: "No current-stress data" })[key] || "All wards";
+  }
   return ({ critical: "Critical", rise: "Rising / improving", stable: "Stable", high: "High coverage", low: "Needs coverage", none: "No sensors" })[key] || "All wards";
 }
 
@@ -989,11 +993,11 @@ function buildLegend() {
     const wardItems = isAnalysisLens(currentLens) && analyticsLoaded
       ? [
           ["critical", CRITICALITY_COLORS.critical, analysisCriticalLabel()],
-          ["rise", CRITICALITY_COLORS.rise, "Groundwater Rise"],
-          ["stable", CRITICALITY_COLORS.stable, currentLens === "groundwater" ? "Stable groundwater trend" : "Below threshold"],
+          ["rise", CRITICALITY_COLORS.rise, currentLens === "current_stress" ? "Elevated current stress" : "Groundwater Rise"],
+          ["stable", CRITICALITY_COLORS.stable, currentLens === "groundwater" ? "Stable groundwater trend" : currentLens === "current_stress" ? "Normal / recovered" : "Below threshold"],
           ["none", BASE_WARD_COLOR.fill, "Other wards"],
         ]
-          .filter(([key]) => key !== "rise" || currentLens === "groundwater")
+          .filter(([key]) => key !== "rise" || ["groundwater", "current_stress"].includes(currentLens))
           .filter(([key]) => key !== "stable" || !["overall", "consumption"].includes(currentLens))
           .filter(([key]) => visibleWards.some(f => wardStatusKey(f.properties) === key))
           .map(([, color, label]) => [color, label])
