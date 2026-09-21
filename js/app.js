@@ -840,7 +840,7 @@ function applyKpiHighlight(kind) {
   if (!wards?.features) return;
   const features = wardFeaturesForKpi(kind);
   highlightedWardNos = new Set(features.map(f => normalizeWardNo(f.properties.ward_no)));
-  highlightStyleMode = "quick";
+  highlightStyleMode = "";
   selectedWardNo = null;
   selectedSensorUid = null;
   const labels = {
