@@ -178,6 +178,13 @@ button { font-family: inherit; }
 .method-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
 .method-row label { font-size: 12px; color: var(--text-muted); font-weight: 600; }
 .method-row select { flex: 1; max-width: 260px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; color: var(--text); background: #fff; }
+.common-query { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.common-query label { display: block; font-size: 12px; color: var(--text-muted); font-weight: 600; margin-bottom: 8px; }
+.common-query-controls { display: flex; align-items: center; gap: 8px; }
+.common-query input {
+  width: 64px; border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; color: var(--text); background: #fff;
+}
 .chip-group { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip-group.vertical { flex-direction: column; }
 .chip {

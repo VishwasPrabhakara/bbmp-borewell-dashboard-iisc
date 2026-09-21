@@ -1,5 +1,5 @@
 // SUSPEND_LENS_GUARD
-const _SUSPENDED_LENSES = new Set(["common_composite","composite","volumetric_deficit","volumetric","previous_consumption","consumption_criticality"]);
+const _SUSPENDED_LENSES = new Set(["overall","common","common_composite","composite","previous_consumption","consumption_criticality"]);
 function _guardLens() {
   if (typeof currentLens === "string" && _SUSPENDED_LENSES.has(currentLens)) {
     currentLens = "groundwater";
@@ -268,7 +268,7 @@ function groundwaterWardStatusKey(wardNo) {
 }
 
 function isAnalysisLens(value) {
-  return ["groundwater", "overall", "volumetric_deficit", "extraction", "pumping_stress", "consumption", "specific_capacity", "current_stress"].includes(value);
+  return ["groundwater", "volumetric_deficit", "extraction", "pumping_stress", "consumption", "specific_capacity", "current_stress"].includes(value);
 }
 
 function pumpingWardSummaryForNo(wardNo) {
@@ -340,10 +340,18 @@ function overallCriticalLensFlags(wardNo) {
   };
 }
 
+function commonLensHitCount(wardNo) {
+  return Object.values(overallCriticalLensFlags(wardNo)).filter(Boolean).length;
+}
+
+function commonLensThreshold() {
+  const input = document.getElementById("common-threshold");
+  const raw = Number(input?.value ?? 2);
+  const value = Number.isFinite(raw) ? Math.round(raw) : 2;
+  return Math.max(1, Math.min(5, value));
+}
+
 function mapAnalysisWardStatusKey(wardNo) {
-  if (currentLens === "overall") {
-    return Object.values(overallCriticalLensFlags(wardNo)).filter(Boolean).length >= 2 ? "critical" : "none";
-  }
   if (currentLens === "consumption") return isPreviousConsumptionCriticalWard(wardNo) ? "critical" : "none";
   if (currentLens === "volumetric_deficit") {
     const vd = wardVolumetricDeficit(wardNo);
@@ -378,28 +386,27 @@ function mapAnalysisWardStatusKey(wardNo) {
 
 function groundwaterMethodLabel() {
   return ({
-    linear_mk_mod: "Linear + Modified Mann-Kendall",
+    linear_mk_mod: "Linear slope + Modified Mann-Kendall",
     theil_mk_mod: "Theil-Sen + Modified Mann-Kendall",
-    linear_theil_mk_mod: "Linear + Theil-Sen + Modified MK",
+    linear_theil_mk_mod: "Linear slope + Theil-Sen + Modified MK",
     mk_mod: "Modified Mann-Kendall (Hamed-Rao)",
-    dashboard: "Linear + Mann-Kendall with Review",
-    linear: "Linear only",
+    dashboard: "Linear slope + Mann-Kendall with Review",
+    linear: "Linear slope only",
     theil: "Theil-Sen only",
     mann: "Mann-Kendall only",
-    linear_theil: "Linear + Theil-Sen",
-    linear_mann: "Linear + Mann-Kendall",
+    linear_theil: "Linear slope + Theil-Sen",
+    linear_mann: "Linear slope + Mann-Kendall",
     theil_mann: "Theil-Sen + Mann-Kendall",
-    all_three: "All three",
-  })[groundwaterMethodMode] || "Linear + Mann-Kendall with Review";
+    all_three: "Linear slope + Theil-Sen + Standard MK",
+  })[groundwaterMethodMode] || "Linear slope + Mann-Kendall with Review";
 }
 
 function analysisLensLabel(value = currentLens) {
   return ({
     groundwater: "Groundwater Decline",
-    overall: "Common",
     volumetric_deficit: "High Volumetric Deficit (ML)",
     extraction: "High Extraction",
-    pumping_stress: "High Pumping Stress (Drawdown/m3)",
+    pumping_stress: "Volume-normalized Drawdown",
     consumption: "Previous Consumption Criticality",
     specific_capacity: "Low Specific Capacity",
     current_stress: "Current Stress Percentile",
@@ -411,10 +418,9 @@ function analysisLensLabel(value = currentLens) {
 function analysisCriticalLabel(value = currentLens) {
   return ({
     groundwater: "Critical: GW Decline",
-    overall: "Common (>= 2/5)",
     volumetric_deficit: "Critical: High Volumetric Loss",
     extraction: "Critical: High Extraction",
-    pumping_stress: "Critical: High Drawdown per m3",
+    pumping_stress: "Critical: High Volume-normalized Drawdown",
     consumption: "Previous Consumption Critical",
     specific_capacity: "Critical: Low Specific Capacity",
     current_stress: "Critical: Currently deep vs own history",
@@ -852,6 +858,34 @@ function applyKpiHighlight(kind) {
   fitHighlightedWards(features);
 }
 
+function updateCommonQueryNote(count = null, threshold = commonLensThreshold()) {
+  const note = document.getElementById("common-query-note");
+  if (!note) return;
+  const suffix = count == null ? "" : ` ${count.toLocaleString("en-IN")} wards match.`;
+  note.textContent = `Highlights wards active in at least ${threshold} of 5 component lenses.${suffix}`;
+}
+
+function applyCommonQuery() {
+  if (!wards?.features) return;
+  const threshold = commonLensThreshold();
+  const input = document.getElementById("common-threshold");
+  if (input) input.value = String(threshold);
+  const features = wards.features.filter(f => commonLensHitCount(f.properties.ward_no) >= threshold);
+  highlightedWardNos = new Set(features.map(f => normalizeWardNo(f.properties.ward_no)));
+  selectedWardNo = null;
+  selectedSensorUid = null;
+  wardStatusFilter = "";
+  quickViewLabel = `Highlighted: Common query >= ${threshold}/5 lenses`;
+  clearKpiHighlightState();
+  document.querySelectorAll("[data-ward-status]").forEach(c => c.classList.toggle("active", c.dataset.wardStatus === ""));
+  closeAllOverlays();
+  if (wardLayer) wardLayer.setStyle(defaultWardStyle);
+  renderSensors();
+  buildLegend();
+  updateCommonQueryNote(features.length, threshold);
+  fitHighlightedWards(features);
+}
+
 function clearKpiHighlightState() {
   document.querySelectorAll("[data-kpi-highlight]").forEach(card => card.classList.remove("active"));
 }
@@ -1182,6 +1216,18 @@ function wireFilters() {
       }
     });
   }
+  const commonApply = document.getElementById("common-query-apply");
+  const commonInput = document.getElementById("common-threshold");
+  if (commonApply) commonApply.addEventListener("click", applyCommonQuery);
+  if (commonInput) {
+    commonInput.addEventListener("change", () => updateCommonQueryNote(null, commonLensThreshold()));
+    commonInput.addEventListener("keydown", e => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        applyCommonQuery();
+      }
+    });
+  }
   document.querySelectorAll("[data-ward-status]").forEach(chip => {
     chip.addEventListener("click", () => {
       wardStatusFilter = chip.dataset.wardStatus;
@@ -1222,6 +1268,7 @@ function wireFilters() {
         document.querySelectorAll("[data-ward-status]").forEach(c => c.classList.toggle("active", c.dataset.wardStatus === ""));
         document.querySelectorAll("[data-sensor-status]").forEach(c => c.classList.toggle("active", c.dataset.sensorStatus === "with_data"));
         syncAnalyticsControls();
+        updateCommonQueryNote();
         if (wardLayer) wardLayer.setStyle(defaultWardStyle);
         renderSensors();
         buildLegend();

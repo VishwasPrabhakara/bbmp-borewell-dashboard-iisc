@@ -97,9 +97,9 @@
         <label for="analysis-lens">Analysis lens</label>
         <select id="analysis-lens">
           <option value="groundwater">Groundwater Decline</option>
-          <option value="overall">Common</option>
+          <option value="volumetric_deficit">High Volumetric Deficit (ML)</option>
           <option value="extraction">High Extraction</option>
-          <option value="pumping_stress">High Pumping Stress (Drawdown/m3)</option>
+          <option value="pumping_stress">Volume-normalized Drawdown</option>
           <option value="consumption">Previous Consumption Criticality</option>
           <option value="specific_capacity">Low Specific Capacity</option>
           <option value="current_stress">Current Stress (well vs own history)</option>
@@ -109,18 +109,26 @@
       <div class="method-row" id="groundwater-method-row" hidden>
         <label for="groundwater-method">Trend method</label>
         <select id="groundwater-method">
-          <option value="linear">Linear regression only</option>
+          <option value="linear">Linear slope only</option>
           <option value="theil">Theil-Sen only</option>
           <option value="mann">Mann-Kendall (standard) only</option>
           <option value="mk_mod">Modified Mann-Kendall (Hamed-Rao)</option>
-          <option value="linear_theil">Linear + Theil-Sen</option>
-          <option value="linear_mann">Linear + Mann-Kendall</option>
+          <option value="linear_theil">Linear slope + Theil-Sen</option>
+          <option value="linear_mann">Linear slope + Mann-Kendall</option>
           <option value="theil_mann">Theil-Sen + Mann-Kendall</option>
-          <option value="linear_mk_mod">Linear + Modified MK</option>
+          <option value="linear_mk_mod">Linear slope + Modified MK</option>
           <option value="theil_mk_mod">Theil-Sen + Modified MK</option>
-          <option value="linear_theil_mk_mod">Linear + Theil-Sen + Modified MK</option>
-          <option value="all_three">Linear + Theil-Sen + Standard MK</option>
+          <option value="linear_theil_mk_mod">Linear slope + Theil-Sen + Modified MK</option>
+          <option value="all_three">Linear slope + Theil-Sen + Standard MK</option>
         </select>
+      </div>
+      <div class="common-query">
+        <label for="common-threshold">Common query</label>
+        <div class="common-query-controls">
+          <input id="common-threshold" type="number" min="1" max="5" step="1" value="2" />
+          <button class="chip" type="button" id="common-query-apply">Highlight wards</button>
+        </div>
+        <div class="filter-note" id="common-query-note">Highlights wards active in at least 2 of 5 component lenses.</div>
       </div>
     </div>
     <div class="filter-section">
