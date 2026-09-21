@@ -52,26 +52,26 @@ function defaultWardStyle(feat) {
   const status = wardStatusKey(p);
   const filterDimmed = wardStatusFilter && status !== wardStatusFilter;
   const isHighlighted = highlightedWardNos.has(normalizeWardNo(p.ward_no));
-  const queryHighlighted = isHighlighted && highlightStyleMode === "query";
+  const selectionHighlighted = isHighlighted && ["query", "quick"].includes(highlightStyleMode);
   const quickDimmed = highlightedWardNos.size > 0 && !isHighlighted;
   const dimmed = (selectedWardNo != null && !isSelected) || filterDimmed || quickDimmed;
   if (!(p.sensor_with_data > 0)) {
     return {
-      fillColor: queryHighlighted ? "#2563eb" : '#d1d5db',
-      color: isSelected ? "#0b3d4c" : queryHighlighted ? "#1d4ed8" : isHighlighted ? "#0e7490" : "#9ca3af",
+      fillColor: selectionHighlighted ? "#2563eb" : '#d1d5db',
+      color: isSelected ? "#0b3d4c" : selectionHighlighted ? "#1d4ed8" : isHighlighted ? "#0e7490" : "#9ca3af",
       weight: isSelected ? 3 : isHighlighted ? 3.2 : 0.6,
-      fillOpacity: dimmed ? 0.12 : queryHighlighted ? 0.78 : isHighlighted ? 0.72 : 0.55,
+      fillOpacity: dimmed ? 0.12 : selectionHighlighted ? 0.78 : isHighlighted ? 0.72 : 0.55,
       opacity: dimmed ? 0.35 : 1,
       dashArray: isHighlighted ? null : '3 3'
     };
   }
   const colored = wardColor(p);
   return {
-    color: isSelected ? "#0b3d4c" : queryHighlighted ? "#1d4ed8" : colored.stroke,
+    color: isSelected ? "#0b3d4c" : selectionHighlighted ? "#1d4ed8" : colored.stroke,
     weight: isSelected ? 3 : isHighlighted ? 3.2 : (status === "none" ? 0.9 : 1.35),
     opacity: dimmed ? 0.16 : 0.95,
-    fillColor: isSelected ? "#028090" : queryHighlighted ? "#2563eb" : colored.fill,
-    fillOpacity: dimmed ? 0.05 : (isSelected ? 0.42 : queryHighlighted ? 0.78 : isHighlighted ? Math.max(colored.opacity, 0.5) : colored.opacity),
+    fillColor: isSelected ? "#028090" : selectionHighlighted ? "#2563eb" : colored.fill,
+    fillOpacity: dimmed ? 0.05 : (isSelected ? 0.42 : selectionHighlighted ? 0.78 : isHighlighted ? Math.max(colored.opacity, 0.5) : colored.opacity),
   };
 }
 
@@ -840,7 +840,7 @@ function applyKpiHighlight(kind) {
   if (!wards?.features) return;
   const features = wardFeaturesForKpi(kind);
   highlightedWardNos = new Set(features.map(f => normalizeWardNo(f.properties.ward_no)));
-  highlightStyleMode = "";
+  highlightStyleMode = "quick";
   selectedWardNo = null;
   selectedSensorUid = null;
   const labels = {
@@ -1106,8 +1106,8 @@ function buildLegend() {
           [CHORO[6], currentLens === "readings" ? "Higher reading load" : "Higher coverage"],
         ]
       : [];
-    const queryItems = highlightStyleMode === "query" && highlightedWardNos.size
-      ? [["#2563eb", quickViewLabel || "Query result"]]
+    const selectionItems = ["query", "quick"].includes(highlightStyleMode) && highlightedWardNos.size
+      ? [["#2563eb", quickViewLabel || "Highlighted wards"]]
       : [];
     const visibleSensorStatuses = new Set(filteredSensors().map(sensorStatusKey));
     const sensorItems = [
@@ -1116,7 +1116,7 @@ function buildLegend() {
     ]
       .filter(([key]) => visibleSensorStatuses.has(key))
       .map(([, color, label]) => [color, label]);
-    items.innerHTML = [...queryItems, ...wardItems, ...sensorItems]
+    items.innerHTML = [...selectionItems, ...wardItems, ...sensorItems]
       .map(([color, label]) => `<div class="legend-item"><span style="background:${color}"></span>${label}</div>`)
       .join("");
   }
@@ -1127,7 +1127,7 @@ function buildLegend() {
       : ({ coverage: "Wards shaded by reporting sensor coverage", readings: "Wards shaded by reading volume" })[currentLens];
     cap.textContent = selectedWardNo != null
       ? "Ward isolated - click map background to clear"
-      : (highlightStyleMode === "query" ? lensLabel : (quickViewLabel || lensLabel));
+      : (["query", "quick"].includes(highlightStyleMode) ? lensLabel : (quickViewLabel || lensLabel));
   }
 }
 
@@ -1329,6 +1329,7 @@ function wireFilters() {
       }
       if (which === "all_wards") {
         highlightedWardNos = new Set(wards.features.map(f => normalizeWardNo(f.properties.ward_no)));
+        highlightStyleMode = "quick";
         quickViewLabel = "All wards highlighted";
         if (wardLayer) wardLayer.setStyle(defaultWardStyle);
         buildLegend();
@@ -1340,6 +1341,7 @@ function wireFilters() {
         .sort((a, b) => which === "max_sensors" ? (b.properties.sensor_with_data || 0) - (a.properties.sensor_with_data || 0) : (a.properties.sensor_with_data || 0) - (b.properties.sensor_with_data || 0));
       const top = filtered.slice(0, which === "no_sensors" ? filtered.length : 10);
       highlightedWardNos = new Set(top.map(f => normalizeWardNo(f.properties.ward_no)));
+      highlightStyleMode = "quick";
       quickViewLabel = which === "max_sensors"
         ? "Highlighted: top 10 wards by sensor count"
         : which === "min_sensors"
