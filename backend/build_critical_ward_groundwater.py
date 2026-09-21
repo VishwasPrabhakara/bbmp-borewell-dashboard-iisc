@@ -24,11 +24,13 @@ Per ward:
        dashboardMapCategory, previousCriticalWard, ...
      Water level is feet BELOW ground surface, so slope > 0 = deepening (bad).
 """
+import argparse
 import datetime as dt
 import glob
 import json
 import math
 import statistics
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -36,6 +38,7 @@ REPO = Path(__file__).resolve().parents[1]
 DATA = REPO / "data"
 
 USABLE_QC = {"GOOD", "USABLE_WITH_CAUTION"}
+STATIC_GAP_HOURS = 8                    # >= this many hours of silence => 'rested' reading
 MIN_WEEKLY_POINTS = 4                   # need >= 4 weekly points to trust a trend
 SIGNIFICANT_SLOPE_FT_PER_WEEK = 0.02    # ~1 ft / year sustained rate is meaningful
 MK_ALPHA = 0.05                         # two-sided
@@ -83,6 +86,7 @@ def mann_kendall(ys):
             elif d < 0:
                 s -= 1
     # tie correction
+
     from collections import Counter
     ties = Counter(ys)
     tie_sum = sum(t * (t - 1) * (2 * t + 5) for t in ties.values() if t > 1)
@@ -101,6 +105,55 @@ def mann_kendall(ys):
     return s, round(z, 3), round(p, 4), verdict
 
 
+def _lag1_autocorr(ys):
+    """Lag-1 autocorrelation coefficient (Pearson r) of a series."""
+    n = len(ys)
+    if n < 3: return 0.0
+    m = sum(ys) / n
+    num = sum((ys[i]-m) * (ys[i+1]-m) for i in range(n-1))
+    den = sum((y-m)**2 for y in ys)
+    if den == 0: return 0.0
+    return num / den
+
+
+def modified_mann_kendall(ys):
+    """Hamed & Rao (1998) modified Mann-Kendall with variance correction for
+    lag-1 autocorrelation. Returns (S, z, p, verdict, correction_factor, r1)."""
+    n = len(ys)
+    if n < 4:
+        return 0, 0.0, 1.0, "No", 1.0, 0.0
+    # Standard MK S statistic
+    s = 0
+    for i in range(n):
+        for j in range(i+1, n):
+            d = ys[j] - ys[i]
+            if d > 0: s += 1
+            elif d < 0: s -= 1
+    from collections import Counter
+    ties = Counter(ys)
+    tie_sum = sum(t*(t-1)*(2*t+5) for t in ties.values() if t > 1)
+    var_s = (n*(n-1)*(2*n+5) - tie_sum) / 18.0
+    if var_s <= 0:
+        return s, 0.0, 1.0, "No", 1.0, 0.0
+    # Yue-Wang / Hamed-Rao autocorrelation-adjusted effective sample size
+    r1 = _lag1_autocorr(ys)
+    # Simplified correction (equivalent to Hamed-Rao lag-1-only case):
+    # n/n* = 1 + 2 * r1 * (1 - r1^n) / (n * (1 - r1)^2)   (Bayley & Hammersley 1946)
+    if abs(r1) < 1e-6 or abs(1 - r1) < 1e-6:
+        n_over_nstar = 1.0
+    else:
+        n_over_nstar = 1.0 + 2.0 * r1 * (1.0 - r1**n) / (n * (1.0 - r1)**2)
+    n_over_nstar = max(1.0, n_over_nstar)  # never REDUCE variance
+    var_s_mod = var_s * n_over_nstar
+    if s > 0:  z = (s - 1) / math.sqrt(var_s_mod)
+    elif s < 0: z = (s + 1) / math.sqrt(var_s_mod)
+    else: z = 0.0
+    p = 2.0 * (1.0 - _phi(abs(z)))
+    verdict = "Yes" if p < MK_ALPHA else "No"
+    return s, round(z, 3), round(p, 4), verdict, round(n_over_nstar, 3), round(r1, 3)
+
+
+
 def _phi(x):
     """Standard normal CDF using erf."""
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2)))
@@ -112,6 +165,21 @@ def iso_week_key(ts):
     """Return (iso_year, iso_week) tuple for grouping."""
     iso = ts.isocalendar()
     return (iso[0], iso[1])
+
+
+def filter_static(times, waters, min_gap_hours=STATIC_GAP_HOURS):
+    """Keep only readings whose preceding gap is >= min_gap_hours (aquifer had time to rest)."""
+    if not times: return [], []
+    out_t, out_v = [], []
+    prev = None
+    for t, v in zip(times, waters):
+        ts = dt.datetime.fromisoformat(t) if isinstance(t, str) else t
+        if prev is not None and v is not None:
+            gap_h = (ts - prev).total_seconds() / 3600.0
+            if gap_h >= min_gap_hours:
+                out_t.append(ts); out_v.append(v)
+        prev = ts
+    return out_t, out_v
 
 
 def sensor_weekly_series(times, water_ft):
@@ -128,6 +196,22 @@ def sensor_weekly_series(times, water_ft):
 # ---------- main pipeline ----------
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--all-sensors', action='store_true',
+                        help='Skip QC filter; use every sensor regardless of qc_status.')
+    parser.add_argument('--mk-modified', action='store_true',
+                        help='Use Modified Mann-Kendall (Hamed-Rao) with lag-1 autocorrelation correction.')
+    parser.add_argument('--percentile', action='store_true',
+                        help='Use percentile-of-network classification (top 20%% deepening, bottom 20%% rising) instead of fixed slope threshold.')
+    parser.add_argument('--static-only', action='store_true',
+                        help='Use only readings with preceding gap >= 8h (rested aquifer).')
+    parser.add_argument('--out', default=None,
+                        help='Output filename (default: critical_groundwater_ward_summary.json).')
+    args = parser.parse_args()
+    global USABLE_QC
+    if args.all_sensors:
+        USABLE_QC = {'GOOD','USABLE_WITH_CAUTION','POOR','INSUFFICIENT_DATA','NO_DATA'}
+        print('MODE: --all-sensors  (QC filter disabled; all sensors treated as usable)')
     print("Loading inputs...")
     sensors = json.load(open(DATA / "sensors.json"))
     qc_payload = json.load(open(DATA / "sensor_qc.json"))
@@ -179,6 +263,8 @@ def main():
             d = json.load(open(fp))
             times = d.get("times", [])
             waters = d.get("water_ft", [])
+            if args.static_only:
+                times, waters = filter_static(times, waters)
             per_sensor = sensor_weekly_series(times, waters)
             point_count += sum(1 for v in waters if v is not None)
             for wk, med in per_sensor.items():
@@ -229,7 +315,11 @@ def main():
 
         lin_slope = linear_slope(xs, ys)
         sen_slope = theil_sen_slope(xs, ys)
-        mk_s, mk_z, mk_p, mk_verdict = mann_kendall(ys)
+        if args.mk_modified:
+            mk_s, mk_z, mk_p, mk_verdict, mk_nfactor, mk_r1 = modified_mann_kendall(ys)
+        else:
+            mk_s, mk_z, mk_p, mk_verdict = mann_kendall(ys)
+            mk_nfactor, mk_r1 = 1.0, 0.0
 
         lin_critical = (lin_slope is not None
                         and lin_slope > SIGNIFICANT_SLOPE_FT_PER_WEEK
@@ -273,6 +363,7 @@ def main():
             "declineStrengthFtPerWeek": round(max(lin_slope or 0, sen_slope or 0), 4),
             "mannKendallVerdict": mk_verdict,
             "mannKendallS": mk_s, "mannKendallZ": mk_z, "mannKendallP": mk_p,
+            "mannKendallLag1AutoCorr": mk_r1, "mannKendallVarianceCorrection": mk_nfactor,
             "linearMannKendallCritical": "Yes" if lin_critical else "No",
             "theilSenMannKendallCritical": "Yes" if sen_critical else "No",
             "groundwaterStatus": status,
@@ -284,12 +375,53 @@ def main():
         output_wards.append(row)
         kept += 1
 
+    # ---- percentile-of-network reclassification ----
+    if args.percentile:
+        valid = [(r, r.get("linearSlopeFtPerWeek")) for r in output_wards
+                 if r.get("linearSlopeFtPerWeek") is not None]
+        slopes = sorted(sl for _, sl in valid)
+        if len(slopes) >= 5:
+            def _pct(vals, p):
+                k = int(round((p/100.0) * (len(vals)-1)))
+                return vals[k]
+            p80 = _pct(slopes, 80)
+            p20 = _pct(slopes, 20)
+            p50 = _pct(slopes, 50)
+            for r, sl in valid:
+                mk = r.get("mannKendallVerdict") == "Yes"
+                if sl >= p80 and mk:
+                    cat = "Critical: Ward-average groundwater decline"
+                    status, direction, action = "Critical", "Declining", "Yes"
+                    reason = f"Slope {sl:.3f} ft/week in top-20% (>= {p80:.3f}) with MK verdict Yes."
+                elif sl <= p20 and mk:
+                    cat = "Confirmed groundwater rise"
+                    status, direction, action = "Normal", "Improving", "No"
+                    reason = f"Slope {sl:.3f} ft/week in bottom-20% (<= {p20:.3f}) with MK verdict Yes."
+                elif sl < p50:
+                    cat = "Possible groundwater rise"
+                    status, direction, action = "Normal", "Possible improvement", "No"
+                    reason = f"Slope {sl:.3f} ft/week below network median ({p50:.3f}); rising but not top-20%."
+                else:
+                    cat = "Stable groundwater trend"
+                    status, direction, action = "Normal", "Stable", "No"
+                    reason = f"Slope {sl:.3f} ft/week above network median ({p50:.3f}); not top-20% deepening."
+                r["dashboardMapCategory"] = cat
+                r["groundwaterStatus"] = status
+                r["groundwaterDirection"] = direction
+                r["dashboardAction"] = action
+                r["updateReason"] = reason
+            print(f"  PERCENTILE thresholds: p20={p20:.4f}  p50={p50:.4f}  p80={p80:.4f} ft/week")
+
     from collections import Counter
     cat_counts = Counter(r["dashboardMapCategory"] for r in output_wards)
     dir_counts = Counter(r["groundwaterDirection"] for r in output_wards)
     payload = {
         "generated_at": dt.datetime.utcnow().isoformat() + "Z",
         "min_weekly_points": MIN_WEEKLY_POINTS,
+        "static_only": bool(args.static_only),
+        "percentile_mode": bool(args.percentile),
+        "mk_modified": bool(args.mk_modified),
+        "static_gap_hours": STATIC_GAP_HOURS,
         "significant_slope_ft_per_week": SIGNIFICANT_SLOPE_FT_PER_WEEK,
         "mk_alpha": MK_ALPHA,
         "ward_total": len(output_wards),
@@ -298,7 +430,8 @@ def main():
         "by_direction": dict(dir_counts),
         "wards": output_wards,
     }
-    with open(DATA / "critical_groundwater_ward_summary.json", "w") as f:
+    out_name = args.out or "critical_groundwater_ward_summary.json"
+    with open(DATA / out_name, "w") as f:
         json.dump(payload, f, separators=(",", ":"))
     print(f"Wrote {DATA / 'critical_groundwater_ward_summary.json'}")
     print(f"  ward_total: {len(output_wards)}   ward_with_trend: {kept}")

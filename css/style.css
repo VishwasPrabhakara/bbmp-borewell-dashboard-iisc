@@ -429,3 +429,17 @@ body.tv-mode .leaflet-tooltip.ward-tip { font-size: 14px; }
   #status-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 body.tv-mode #status-strip { grid-template-columns: repeat(5, minmax(160px, 1fr)); }
+
+/* short-record UI patch */
+.data-window-banner {
+  background: #fef3c7; color: #78350f; border-bottom: 1px solid #fbbf24;
+  padding: 6px 14px; font-size: 12.5px; line-height: 1.35;
+  text-align: center;
+}
+.data-window-banner b { color: #7c2d12; }
+@media (max-width: 700px) { .data-window-banner { font-size: 11.5px; padding: 5px 10px; } }
+
+/* Classification method toggle */
+#criticality-method { min-width: 300px; font-size: 12.5px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+#criticality-method:hover { border-color: var(--brand-2); }
+

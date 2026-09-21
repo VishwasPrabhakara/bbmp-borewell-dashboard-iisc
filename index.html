@@ -19,6 +19,7 @@
 </div>
 
 <!-- HIGH-SIGNAL SNAPSHOT STRIP -->
+<div id="data-window-banner" class="data-window-banner">Data window <b>Jul 2025 &ndash; Sep 2026</b>. Trends within this window largely reflect monsoon recovery, not long-term change.</div>
 <div id="status-strip" class="floating" aria-live="polite">
   <div class="metric-card">
     <div class="metric-value" id="metric-total-sensors">—</div>
@@ -30,7 +31,7 @@
   </div>
   <div class="metric-card">
     <div class="metric-value metric-critical" id="metric-critical">—</div>
-    <div class="metric-label" id="metric-critical-label">Critical wards</div>
+    <div class="metric-label" id="metric-critical-label">Deepening wards</div>
   </div>
   <div class="metric-card">
     <div class="metric-value metric-rise" id="metric-rise">—</div>
@@ -86,29 +87,39 @@
     <div class="filter-section">
       <div class="filter-label">Map lens</div>
       <div class="method-row lens-row">
+        <label for="criticality-method">Classification method</label>
+        <select id="criticality-method">
+          <option value="modern" selected>Static-only + Network-percentile + Modified MK (Recommended)</option>
+          <option value="legacy">Legacy: 0.1 ft/week threshold, raw levels, standard MK</option>
+        </select>
+      </div>
+      <div class="method-row lens-row">
         <label for="analysis-lens">Analysis lens</label>
         <select id="analysis-lens">
           <option value="groundwater">Groundwater Decline</option>
           <option value="overall">Common</option>
-          <option value="volumetric_deficit">High Volumetric Deficit (ML)</option>
           <option value="extraction">High Extraction</option>
           <option value="pumping_stress">High Pumping Stress (Drawdown/m3)</option>
           <option value="consumption">Previous Consumption Criticality</option>
           <option value="specific_capacity">Low Specific Capacity</option>
+          <option value="current_stress">Current Stress (well vs own history)</option>
         </select>
       </div>
       <div class="filter-note" id="analytics-note">Groundwater criticality uses the earlier dashboard API when available; no raw water-level or discharge series are imported.</div>
       <div class="method-row" id="groundwater-method-row" hidden>
         <label for="groundwater-method">Trend method</label>
         <select id="groundwater-method">
-          <option value="dashboard">Linear + Mann-Kendall with Review</option>
-          <option value="linear">Linear only</option>
+          <option value="linear">Linear regression only</option>
           <option value="theil">Theil-Sen only</option>
-          <option value="mann">Mann-Kendall only</option>
+          <option value="mann">Mann-Kendall (standard) only</option>
+          <option value="mk_mod">Modified Mann-Kendall (Hamed-Rao)</option>
           <option value="linear_theil">Linear + Theil-Sen</option>
           <option value="linear_mann">Linear + Mann-Kendall</option>
           <option value="theil_mann">Theil-Sen + Mann-Kendall</option>
-          <option value="all_three">All three</option>
+          <option value="linear_mk_mod">Linear + Modified MK</option>
+          <option value="theil_mk_mod">Theil-Sen + Modified MK</option>
+          <option value="linear_theil_mk_mod">Linear + Theil-Sen + Modified MK</option>
+          <option value="all_three">Linear + Theil-Sen + Standard MK</option>
         </select>
       </div>
     </div>

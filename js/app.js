@@ -1,3 +1,13 @@
+// SUSPEND_LENS_GUARD
+const _SUSPENDED_LENSES = new Set(["common_composite","composite","volumetric_deficit","volumetric","previous_consumption","consumption_criticality"]);
+function _guardLens() {
+  if (typeof currentLens === "string" && _SUSPENDED_LENSES.has(currentLens)) {
+    currentLens = "groundwater";
+    const sel = document.getElementById("analysis-lens");
+    if (sel) sel.value = "groundwater";
+  }
+}
+
 // BBMP Borewell Dashboard — IISc for BWSSB
 // Full-screen map first. Everything else opens on click.
 
@@ -22,6 +32,7 @@ let sessionSummary = null;
 let analyticsLoaded = false;
 let sensorQcByUid = new Map();
 let criticalGroundwaterByNo = new Map();
+let currentStressByNo = new Map();
 let pumpingPerformanceWardSummaryByNo = new Map();
 let pumpingPerformanceWardThresholds = {};
 let volumetricDeficitByNo = new Map();
@@ -35,6 +46,12 @@ let highlightedWardNos = new Set();
 let quickViewLabel = "";
 
 function defaultWardStyle(feat) {
+  // NO_DATA_WARD_STYLE
+  { const _p = (feat && feat.properties) || {};
+    if (!(_p.sensor_with_data > 0)) {
+      return { fillColor: '#d1d5db', color: '#9ca3af', weight: 0.6, fillOpacity: 0.55, dashArray: '3 3' };
+    } }
+
   const p = feat.properties;
   const isSelected = selectedWardNo != null && p.ward_no === selectedWardNo;
   const status = wardStatusKey(p);
@@ -98,7 +115,8 @@ function isYes(value) {
 
 const LINEAR_DECLINE_THRESHOLD_FT_PER_WEEK = 0.1;
 const TREND_SIGNIFICANCE_ALPHA = 0.05;
-const GROUNDWATER_MIN_MK_WEEKS = 8;
+const GROUNDWATER_MIN_MK_WEEKS_MODERN = 30;
+const GROUNDWATER_MIN_MK_WEEKS_LEGACY = 8;
 
 function numOrNull(value) {
   const n = Number(value);
@@ -106,6 +124,31 @@ function numOrNull(value) {
 }
 
 function calculateGroundwaterCriticality(input = {}) {
+  // Backend-classification passthrough: honour file's dashboardMapCategory when present.
+  const backendCats = new Set(["Critical: Ward-average groundwater decline",
+    "Confirmed groundwater rise","Possible groundwater rise","Stable groundwater trend","Insufficient data"]);
+  if (criticalityMethod === "modern" && input.dashboardMapCategory && backendCats.has(input.dashboardMapCategory)) {
+    const backendCat = input.dashboardMapCategory;
+    const isCritical = backendCat === "Critical: Ward-average groundwater decline";
+    return {
+      ...input,
+      groundwaterStatus: isCritical ? "Critical" : (backendCat === "Insufficient data" ? "Insufficient data" : "Normal"),
+      groundwaterDirection: isCritical ? "Declining"
+        : backendCat === "Confirmed groundwater rise" ? "Improving"
+        : backendCat === "Possible groundwater rise" ? "Possible improvement"
+        : backendCat === "Stable groundwater trend" ? "Stable" : "Not computed",
+      dashboardAction: isCritical ? "Yes" : "No",
+      dashboardMapCategory: backendCat,
+      linearMethodCritical: isCritical ? "Yes" : "No",
+      theilSenMethodCritical: isCritical ? "Yes" : "No",
+      mannKendallMethodCritical: input.mannKendallVerdict === "Yes" ? "Yes" : "No",
+      linearMannKendallCritical: input.linearMannKendallCritical || (isCritical ? "Yes" : "No"),
+      theilSenMannKendallCritical: input.theilSenMannKendallCritical || (isCritical ? "Yes" : "No"),
+      pointCount: input.usableWeeklyValues ?? input.pointCount ?? 0,
+      hasTrendEvidence: backendCat !== "Insufficient data",
+    };
+  }
+
   const linear = numOrNull(input.linearSlopeFtPerWeek ?? input.weeklyChangeFtWeek ?? input.weekly_change_ft_week_from_dashboard_average);
   const theil = numOrNull(input.senSlopeFtPerWeek ?? input.theilSlopeFtPerWeek ?? linear);
   const mk = numOrNull(input.mannKendallS);
@@ -115,7 +158,7 @@ function calculateGroundwaterCriticality(input = {}) {
   const selectedSlope = Number.isFinite(linear) ? linear : theil;
   const hasTrendEvidence = hasSlope;
   const hasMannKendall = Number.isFinite(pointCount)
-    && pointCount >= GROUNDWATER_MIN_MK_WEEKS
+    && pointCount >= (criticalityMethod === 'legacy' ? GROUNDWATER_MIN_MK_WEEKS_LEGACY : GROUNDWATER_MIN_MK_WEEKS_MODERN)
     && Number.isFinite(mk)
     && Number.isFinite(pValue);
   const linearCritical = Number.isFinite(linear) && linear > LINEAR_DECLINE_THRESHOLD_FT_PER_WEEK;
@@ -162,13 +205,23 @@ function methodVotesForCritical(critical = {}) {
 
 function selectedGroundwaterMethodIsCritical(critical = {}, mode = groundwaterMethodMode) {
   const votes = methodVotesForCritical(critical);
-  if (mode === "dashboard") return isYes(critical.dashboardAction) || critical.groundwaterStatus === "Critical" || critical.dashboardMapCategory === "Critical: Ward-average groundwater decline";
+  // Standard MK vote already in `votes.mann` — uses input.mannKendallMethodCritical.
+  // Modified MK vote: recompute using the ACR-corrected p that the backend stamped.
+  // In modern mode the backend already ran Modified MK, so mannKendallVerdict IS modified MK.
+  // In legacy mode we have no modified MK data, so treat mk_mod == mk.
+  const mkMod = (criticalityMethod === "legacy")
+    ? votes.mann
+    : (critical.mannKendallVerdict === "Yes" && (Number(critical.linearSlopeFtPerWeek) > 0 || Number(critical.senSlopeFtPerWeek) > 0));
   if (mode === "linear") return votes.linear;
   if (mode === "theil") return votes.theil;
   if (mode === "mann") return votes.mann;
+  if (mode === "mk_mod") return mkMod;
   if (mode === "linear_theil") return votes.linear && votes.theil;
-  if (mode === "linear_mann") return isYes(critical.linearMannKendallCritical) || (votes.linear && votes.mann);
-  if (mode === "theil_mann") return isYes(critical.theilSenMannKendallCritical) || (votes.theil && votes.mann);
+  if (mode === "linear_mann") return votes.linear && votes.mann;
+  if (mode === "theil_mann") return votes.theil && votes.mann;
+  if (mode === "linear_mk_mod") return votes.linear && mkMod;
+  if (mode === "theil_mk_mod") return votes.theil && mkMod;
+  if (mode === "linear_theil_mk_mod") return votes.linear && votes.theil && mkMod;
   if (mode === "all_three") return votes.linear && votes.theil && votes.mann;
   return false;
 }
@@ -203,7 +256,7 @@ function groundwaterWardStatusKey(wardNo) {
 }
 
 function isAnalysisLens(value) {
-  return ["groundwater", "overall", "volumetric_deficit", "extraction", "pumping_stress", "consumption", "specific_capacity"].includes(value);
+  return ["groundwater", "overall", "volumetric_deficit", "extraction", "pumping_stress", "consumption", "specific_capacity", "current_stress"].includes(value);
 }
 
 function pumpingWardSummaryForNo(wardNo) {
@@ -287,6 +340,15 @@ function mapAnalysisWardStatusKey(wardNo) {
     if (!pumping) return "none";
     return pumping.criticalByExtraction ? "critical" : "stable";
   }
+  if (currentLens === "current_stress") {
+    const cs = currentStressByNo.get(normalizeWardNo(wardNo));
+    if (!cs) return "none";
+    const cat = cs.stressCategory || "";
+    if (cat.startsWith("Critical")) return "critical";
+    if (cat.startsWith("Elevated")) return "rise"; // reuse styling — actually treat as intermediate
+    if (cat.startsWith("Below")) return "stable"; // recovered
+    return "none";
+  }
   if (currentLens === "specific_capacity") {
     const pumping = pumpingWardSummaryForNo(wardNo);
     if (!pumping) return "none";
@@ -302,6 +364,10 @@ function mapAnalysisWardStatusKey(wardNo) {
 
 function groundwaterMethodLabel() {
   return ({
+    linear_mk_mod: "Linear + Modified Mann-Kendall",
+    theil_mk_mod: "Theil-Sen + Modified Mann-Kendall",
+    linear_theil_mk_mod: "Linear + Theil-Sen + Modified MK",
+    mk_mod: "Modified Mann-Kendall (Hamed-Rao)",
     dashboard: "Linear + Mann-Kendall with Review",
     linear: "Linear only",
     theil: "Theil-Sen only",
@@ -322,6 +388,7 @@ function analysisLensLabel(value = currentLens) {
     pumping_stress: "High Pumping Stress (Drawdown/m3)",
     consumption: "Previous Consumption Criticality",
     specific_capacity: "Low Specific Capacity",
+    current_stress: "Current Stress Percentile",
     coverage: "Sensor Coverage",
     readings: "Reading Load",
   })[value] || "Groundwater Decline";
@@ -336,6 +403,7 @@ function analysisCriticalLabel(value = currentLens) {
     pumping_stress: "Critical: High Drawdown per m3",
     consumption: "Previous Consumption Critical",
     specific_capacity: "Critical: Low Specific Capacity",
+    current_stress: "Critical: Currently deep vs own history",
   })[value] || "Critical ward";
 }
 
@@ -413,9 +481,10 @@ function clearWardSelection() {
 
 let currentShading = "with_data";
 let currentLens = "coverage";
+let criticalityMethod = "modern";
 let wardStatusFilter = "";
 let sensorStatusFilter = "with_data";
-let groundwaterMethodMode = "dashboard";
+let groundwaterMethodMode = "linear_mk_mod";
 let charts = { water: null, discharge: null, modal: null };
 let currentSensorSeries = null;   // cached
 let selectedSensorUid = null;
@@ -489,6 +558,8 @@ async function loadData() {
   sensors = mergeSensorInventory(ss, analytics.fullSensors || []);
   manifest = mf;
   sessionSummary = qs;
+    currentStressByNo = new Map((analytics.currentStress?.wards || [])
+    .map(w => [String(w.wardNo), w]));
   criticalGroundwaterByNo = new Map((analytics.criticalGroundwater?.wards || [])
     .map(calculateGroundwaterCriticality)
     .map(item => [normalizeWardNo(item.wardNo), item])
@@ -531,7 +602,7 @@ async function loadAnalyticsData() {
     fetchJson("/api/critical-wards-groundwater", { wards: [] }),
     fetchJson("/api/pumping-performance/wards?cache_v=pump-kh-cycles-20260831-1", { wards: [], thresholds: {} }),
   ]);
-  const localCriticalGroundwater = await fetchLocalJson("./data/critical_groundwater_ward_summary.json", { wards: [] });
+  const localCriticalGroundwater = await fetchLocalJson(`./data/critical_groundwater_ward_summary.json?ts=${Date.now()}`, { wards: [] });
   const hasActiveGroundwaterClasses = (criticalGroundwater?.wards || []).some(item => (
     isYes(item.dashboardAction)
     || item.groundwaterStatus === "Critical"
@@ -540,12 +611,24 @@ async function loadAnalyticsData() {
     || item.dashboardMapCategory === "Possible groundwater rise"
     || item.dashboardMapCategory === "Stable groundwater trend"
   ));
-  const activeCriticalGroundwater = hasActiveGroundwaterClasses ? criticalGroundwater : localCriticalGroundwater;
-  const localPumpingPerformance = pumpingPerformance?.wards?.length
-    ? pumpingPerformance
-    : await fetchLocalJson("./data/pumping_performance_ward_summary.json", { wards: [], thresholds: {} });
+  // LOCAL_STATIC_OVERRIDE: prefer local static-only file when it has data.
+  const hasLocalGroundwater = (localCriticalGroundwater?.wards || []).length > 0;
+  const activeCriticalGroundwater = hasLocalGroundwater ? localCriticalGroundwater : (hasActiveGroundwaterClasses ? criticalGroundwater : localCriticalGroundwater);
+  // LOCAL_OVERRIDE: always prefer local pumping performance (augmented with flags)
+  const localPumpingPerformance = await fetchLocalJson(`./data/pumping_performance_ward_summary.json?ts=${Date.now()}`, { wards: [], thresholds: {} });
   const volumetricDeficit = await fetchLocalJson("./data/ward_volumetric_deficit_summary.json", { wards: [] });
-  return { fullSensors: sensorPayload.sensors || [], criticalGroundwater: activeCriticalGroundwater, pumpingPerformance: localPumpingPerformance, volumetricDeficit };
+  const currentStress = await fetchLocalJson(`./data/current_stress_ward_summary.json?ts=${Date.now()}`, { wards: [] });
+  return { fullSensors: sensorPayload.sensors || [], criticalGroundwater: activeCriticalGroundwater, pumpingPerformance: localPumpingPerformance, volumetricDeficit, currentStress };
+}
+
+
+async function loadCriticalityForMethod(method) {
+  const path = method === "legacy" ? "./data/critical_groundwater_ward_summary_legacy.json" : "./data/critical_groundwater_ward_summary.json";
+  try {
+    const res = await fetch(`${path}?ts=${Date.now()}`);
+    if (!res.ok) return { wards: [] };
+    return await res.json();
+  } catch (e) { console.warn("[dash] load crit failed", e); return { wards: [] }; }
 }
 
 function normalizeApiSensor(s) {
@@ -658,8 +741,14 @@ function activeWardPropsForDetail() {
 }
 
 function updateMetrics() {
+  _guardLens();
   const number = v => v == null ? "—" : Number(v).toLocaleString("en-IN");
-  const reporting = sensors.filter(s => s && s.has_data).length;
+  const usableSet = new Set(["GOOD","USABLE_WITH_CAUTION"]);
+  const reporting = sensors.filter(s => {
+    if (!s) return false;
+    const qc = sensorQcByUid.get(String(s.uid));
+    return qc ? usableSet.has(qc.qc_status) : !!s.has_data;
+  }).length;
   document.getElementById("metric-total-sensors").textContent = number(reporting);
   const wardsWithData = wards?.features?.filter(f => (f.properties.sensor_with_data || 0) > 0).length || 0;
   document.getElementById("metric-wards").textContent = `${number(wardsWithData)}/${number(wards?.features?.length || manifest?.wards || 0)}`;
@@ -683,7 +772,7 @@ function updateLensCounts() {
   set("metric-stable", stable);
   const lbl = document.getElementById("metric-critical-label");
   if (lbl && typeof analysisLensLabel === "function") {
-    lbl.textContent = `Critical · ${analysisLensLabel()}`;
+    lbl.textContent = `Deepening · ${analysisLensLabel()}`;
   }
 }
 
@@ -712,10 +801,27 @@ function renderWards() {
     style: feat => defaultWardStyle(feat),
     onEachFeature: (feat, layer) => {
       const p = feat.properties;
+      const cs = currentStressByNo.get(String(p.ward_no));
+      let fiveNumRow = "";
+      let confidenceBadge = "";
+      if (cs && cs.wells && cs.wells.length) {
+        const levels = cs.wells.map(w => w.current_ft).filter(v => Number.isFinite(v)).sort((a,b)=>a-b);
+        if (levels.length) {
+          const q = (arr, p) => arr[Math.min(arr.length-1, Math.max(0, Math.round(p*(arr.length-1))))];
+          const fmt = v => v.toFixed(0);
+          fiveNumRow = `<div class="kv">Well depths (ft): min <b>${fmt(levels[0])}</b> · P25 <b>${fmt(q(levels,0.25))}</b> · med <b>${fmt(q(levels,0.5))}</b> · P75 <b>${fmt(q(levels,0.75))}</b> · max <b>${fmt(levels[levels.length-1])}</b></div>`;
+        }
+        const n = cs.wellCount || 0;
+        const conf = n >= 5 ? "High" : n >= 3 ? "Medium" : "Low";
+        const color = n >= 5 ? "#059669" : n >= 3 ? "#d97706" : "#b91c1c";
+        confidenceBadge = `<div class="kv">Confidence: <b style="color:${color}">${conf}</b> (${n} well${n===1?"":"s"} with static data)</div>`;
+      }
       const tip = `
         <div class="name">Ward ${p.ward_no} — ${p.ward_name}</div>
         <div class="kv">Sensors with data: <b>${p.sensor_with_data || 0}</b> / ${p.sensor_total || 0}</div>
         <div class="kv">Map status: <b>${wardStatusLabel(wardStatusKey(p))}</b></div>
+        ${fiveNumRow}
+        ${confidenceBadge}
         <div class="kv">Population (2026 proj): ${p.population_2026 ? Math.round(p.population_2026).toLocaleString("en-IN") : "—"}</div>
         <div class="kv">Area: ${p.area_km2 ? p.area_km2.toFixed(1) + " km²" : "—"}</div>
       `;
@@ -1161,7 +1267,7 @@ function sensorChartsHTML() {
     <div class="chart-block">
       <div class="chart-header">
         <div class="chart-title">Water level (ft below surface)</div>
-        <div class="chart-actions"><select class="chart-mode" data-chart="water" title="Level filter"><option value="all">All levels</option><option value="off">Static (pump off)</option><option value="on">Pumping (pump on)</option></select>${chips}<button class="dl-btn" data-download="water" title="Download PNG">⬇</button><button class="expand-btn" data-expand="water" title="Expand">⤢</button></div>
+        <div class="chart-actions"><select class="chart-mode" data-chart="water" title="Level filter"><option value="all">All levels</option><option value="rested8h">Static (rested ≥ 8h)</option><option value="off">Static (pump off, from sessions)</option><option value="on">Pumping (pump on)</option></select>${chips}<button class="dl-btn" data-download="water" title="Download PNG">⬇</button><button class="expand-btn" data-expand="water" title="Expand">⤢</button></div>
       </div>
       <div class="chart-canvas-wrap"><canvas id="chart-water"></canvas></div>
     </div>
@@ -1275,6 +1381,23 @@ function rangeFrom() {
   if (currentRange === "3M") return new Date(last.getTime() - 90 * 86400000);
   return null;
 }
+function restedLevelPoints(minGapHours) {
+  const S = currentSensorSeries; if (!S || !S.times || !S.times.length) return [];
+  const from = (typeof rangeFrom === "function") ? rangeFrom() : null;
+  const gapMs = (minGapHours || 8) * 3600 * 1000;
+  const out = [];
+  let prev = null;
+  for (let i = 0; i < S.times.length; i++) {
+    const t = new Date(S.times[i]);
+    const y = S.water_ft ? S.water_ft[i] : null;
+    if (prev !== null && (t - prev) >= gapMs && y != null) {
+      if (!from || t >= from) out.push({ x: t, y });
+    }
+    prev = t;
+  }
+  return out;
+}
+
 function sessionLevelPoints(which) {
   const S = currentSensorSeries, wl = S.water_ft, from = rangeFrom();
   const pts = [];
@@ -1318,7 +1441,10 @@ function drawCharts() {
   const yOpts = t => { const o = chartBaseOpts(xUnit); o.scales.y.title = { display: true, text: t, color: "#5a6472" }; return o; };
   // Water level
   let wDatasets, wLabels;
-  if (waterMode === "all") {
+  if (waterMode === "rested8h") {
+    const pts = restedLevelPoints(8);
+    wDatasets = [{ label: "Static level (rested ≥ 8h)", data: pts, borderColor: "#0e7490", backgroundColor: "rgba(14,116,144,0.10)", fill: false, tension: 0.2, pointRadius: 2.5, borderWidth: 1.6 }];
+  } else if (waterMode === "all") {
     wDatasets = [{ label: "Water level", data: d.water, borderColor: "#0e7490", backgroundColor: "rgba(14,116,144,0.10)", fill: true, tension: 0.25, pointRadius: 0 }];
     wLabels = d.times;
   } else {
@@ -1467,6 +1593,8 @@ function openChartModal(which) {
   if (mode === "all") {
     labels = d.times;
     datasets = [{ data: isWater ? d.water : d.flow, borderColor: color, backgroundColor: color + "1A", fill: true, tension: 0.25, pointRadius: 0 }];
+  } else if (isWater && mode === "rested8h") {
+    datasets = [{ data: restedLevelPoints(8), borderColor: color, backgroundColor: color + "1A", fill: false, tension: 0.2, pointRadius: 3 }];
   } else if (isWater) {
     datasets = [{ data: sessionLevelPoints(waterMode), borderColor: color, backgroundColor: color + "1A", fill: false, tension: 0.2, pointRadius: 3 }];
   } else {
@@ -1522,5 +1650,35 @@ document.addEventListener("click", (e) => {
   const grain = window.confirm("Daily rainfall CSV?\nOK = daily · Cancel = monthly") ? "daily" : "monthly";
   downloadRainfallCsv(wardNo, grain);
 });
+
+
+async function switchCriticalityMethod(method) {
+  criticalityMethod = method;
+  const payload = await loadCriticalityForMethod(method);
+  const rows = (payload.wards || []).map(calculateGroundwaterCriticality);
+  criticalGroundwaterByNo = new Map(rows.map(w => [normalizeWardNo(w.wardNo), w]));
+  analyticsLoaded = criticalGroundwaterByNo.size > 0;
+  console.log(`[method] ${method} loaded, wards=${criticalGroundwaterByNo.size}`);
+  if (wardLayer) wardLayer.setStyle(defaultWardStyle);
+  if (typeof updateMetrics === "function") updateMetrics();
+  if (typeof buildLegend === "function") buildLegend();
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  const el = document.getElementById("criticality-method");
+  if (el) el.addEventListener("change", () => switchCriticalityMethod(el.value));
+});
+
+
+function ensureSensorPanelFooter() {
+  const panel = document.getElementById("sensor-detail") || document.querySelector(".sensor-detail-panel");
+  if (!panel) return;
+  if (document.getElementById("sensor-panel-datawindow")) return;
+  const div = document.createElement("div");
+  div.id = "sensor-panel-datawindow";
+  div.style.cssText = "margin-top:10px; padding:6px 10px; background:#fef3c7; color:#78350f; border-left:3px solid #fbbf24; font-size:11.5px; line-height:1.4; border-radius:4px;";
+  div.innerHTML = "<b>Note:</b> Data window Jul 2025 &ndash; Sep 2026. Trend interpretation limited by monsoon-biased record. All slopes computed from static (rested ≥ 8h) readings only.";
+  panel.appendChild(div);
+}
 
 boot();

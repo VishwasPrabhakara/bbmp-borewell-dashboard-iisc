@@ -1,0 +1,183 @@
+{
+  "source": "all_sensor_wards_groundwater_loss_with_uids.csv",
+  "note": "Ward-level derived volumetric-loss summary only; raw water-level and discharge records are not included.",
+  "specificYield": 0.02,
+  "criticalDeficitMl": 10,
+  "wards": [
+    {
+      "wardNo": 106,
+      "wardName": "Dr. Raj Kumar Ward",
+      "durationDays": 280,
+      "slopeFtPerWeek": 89.49599270524945,
+      "usableSensorCount": 1
+    },
+    {
+      "wardNo": 3,
+      "wardName": "Atturu",
+      "durationDays": 61,
+      "slopeFtPerWeek": 70.73944163721157,
+      "usableSensorCount": 2
+    },
+    {
+      "wardNo": 48,
+      "wardName": "Muneshwara Nagar",
+      "durationDays": 157,
+      "slopeFtPerWeek": 61.15066505035764,
+      "usableSensorCount": 3
+    },
+    {
+      "wardNo": 37,
+      "wardName": "Yeshwanthpura",
+      "durationDays": 170,
+      "slopeFtPerWeek": 53.41039479420084,
+      "usableSensorCount": 2
+    },
+    {
+      "wardNo": 124,
+      "wardName": "Hosahalli",
+      "durationDays": 148,
+      "slopeFtPerWeek": 51.762066371339685,
+      "usableSensorCount": 2
+    },
+    {
+      "wardNo": 177,
+      "wardName": "J P Nagar",
+      "durationDays": 254,
+      "slopeFtPerWeek": 29.5835354702702,
+      "usableSensorCount": 1
+    },
+    {
+      "wardNo": 104,
+      "wardName": "Govindaraja Nagar",
+      "durationDays": 325,
+      "slopeFtPerWeek": 29.207553825391848,
+      "usableSensorCount": 1
+    },
+    {
+      "wardNo": 182,
+      "wardName": "Padmanabha Nagar",
+      "durationDays": 76,
+      "slopeFtPerWeek": 28.61162492069282,
+      "usableSensorCount": 1
+    },
+    {
+      "wardNo": 29,
+      "wardName": "Kacharkanahalli",
+      "durationDays": 114,
+      "slopeFtPerWeek": 19.929461942177443,
+      "usableSensorCount": 1
+    },
+    {
+      "wardNo": 56,
+      "wardName": "A Narayanapura",
+      "durationDays": 149,
+      "slopeFtPerWeek": 13.416584645615716,
+      "usableSensorCount": 4
+    },
+    {
+      "wardNo": 15,
+      "wardName": "T Dasarahalli",
+      "durationDays": 225,
+      "slopeFtPerWeek": 12.348900865863024,
+      "usableSensorCount": 14
+    },
+    {
+      "wardNo": 167,
+      "wardName": "Yediyur",
+      "durationDays": 75,
+      "slopeFtPerWeek": 12.161315043590466,
+      "usableSensorCount": 2
+    },
+    {
+      "wardNo": 141,
+      "wardName": "Azad Nagar",
+      "durationDays": 179,
+      "slopeFtPerWeek": 11.677410382578213,
+      "usableSensorCount": 13
+    },
+    {
+      "wardNo": 136,
+      "wardName": "Jagajivanaramnagar",
+      "durationDays": 155,
+      "slopeFtPerWeek": 8.518700787367504,
+      "usableSensorCount": 2
+    },
+    {
+      "wardNo": 81,
+      "wardName": "Vijnana Nagar",
+      "durationDays": 137,
+      "slopeFtPerWeek": 7.65378937004813,
+      "usableSensorCount": 7
+    },
+    {
+      "wardNo": 85,
+      "wardName": "Dodda Nekkundi",
+      "durationDays": 176,
+      "slopeFtPerWeek": 7.518905167561671,
+      "usableSensorCount": 5
+    },
+    {
+      "wardNo": 12,
+      "wardName": "Shettihalli",
+      "durationDays": 209,
+      "slopeFtPerWeek": 7.40699633699634,
+      "usableSensorCount": 27
+    },
+    {
+      "wardNo": 155,
+      "wardName": "Hanumanth Nagar",
+      "durationDays": 145,
+      "slopeFtPerWeek": 3.9579232283306167,
+      "usableSensorCount": 7
+    },
+    {
+      "wardNo": 7,
+      "wardName": "Byatarayanapura",
+      "durationDays": 324,
+      "slopeFtPerWeek": 1.6593689693995417,
+      "usableSensorCount": 13
+    },
+    {
+      "wardNo": 9,
+      "wardName": "Vidyaranyapura",
+      "durationDays": 175,
+      "slopeFtPerWeek": 1.4378749999999998,
+      "usableSensorCount": 6
+    },
+    {
+      "wardNo": 53,
+      "wardName": "Basavanapura",
+      "durationDays": 115,
+      "slopeFtPerWeek": 1.2581056216117716,
+      "usableSensorCount": 4
+    },
+    {
+      "wardNo": 147,
+      "wardName": "Adugodi",
+      "durationDays": 97,
+      "slopeFtPerWeek": 1.217191601044965,
+      "usableSensorCount": 5
+    },
+    {
+      "wardNo": 137,
+      "wardName": "Rayapuram",
+      "durationDays": 168,
+      "slopeFtPerWeek": 1.1975906209111884,
+      "usableSensorCount": 4
+    },
+    {
+      "wardNo": 190,
+      "wardName": "Mangammanapalya",
+      "durationDays": 117,
+      "slopeFtPerWeek": 0.8562075638507274,
+      "usableSensorCount": 4
+    },
+    {
+      "wardNo": 5,
+      "wardName": "Jakkuru",
+      "durationDays": 196,
+      "slopeFtPerWeek": 0.1400734465550552,
+      "usableSensorCount": 13
+    }
+  ]
+}

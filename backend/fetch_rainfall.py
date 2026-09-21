@@ -77,6 +77,13 @@ from collections import defaultdict
 from pathlib import Path
 
 import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# KSNDMC's ArcGIS server (ksndmc.org:6443) presents a cert chain most
+# Python trust stores don't accept. Verified via GET in a browser to be the
+# real server — safe to skip verification here.
+VERIFY_TLS = False
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT.parent / "data"
@@ -94,8 +101,20 @@ KWRIS_HEADERS = {"Content-Type": "application/json",
 KSNDMC_LIVE_URL = ("https://ksndmc.org:6443/arcgis/rest/services/"
                    "BBMP_WEATHER_MAP/MapServer/0/query")
 
-# KWRIS district code for BBMP / Bengaluru Urban.
-KWRIS_DISTRICT_BENGALURU_URBAN = "166"
+# KWRIS default districts for BBMP-relevant coverage.
+# BBMP wards span Bengaluru Urban + Rural + edges of Ramanagara. We fetch
+# stations from all of these, dedupe by GUID, and then keep only stations
+# that spatially fall inside a BBMP ward polygon.
+# Pass different codes via --districts on the CLI. Discoverable at runtime
+# via the KWRIS district dropdown endpoint (see _kwris_discover_districts).
+KWRIS_DISTRICTS_DEFAULT = [
+    "166",  # Bengaluru Urban
+    "165",  # Bengaluru Rural
+    "184",  # Ramanagara
+    "174",  # Chikkaballapura
+    "182",  # Kolar
+    "191",  # Tumakuru
+]
 # `datasource=32` = WRD-SMS (the default network on the KWRIS dashboard).
 KWRIS_DATASOURCE = "32"
 
@@ -155,16 +174,15 @@ def assign_ward(lat, lng, wards_geo):
 # KWRIS historical scrape
 # ---------------------------------------------------------------------------
 
-def kwris_get_stations(district=KWRIS_DISTRICT_BENGALURU_URBAN,
-                       datasource=KWRIS_DATASOURCE,
-                       year=None):
-    """Fetch KWRIS station catalog for a district. Returns list of dicts."""
+def kwris_get_stations_for_district(district, datasource=KWRIS_DATASOURCE, year=None):
+    """Fetch KWRIS station catalog for ONE district. Returns list of dicts."""
     year = year or str(dt.date.today().year)
     body = {"Boundary": "1", "District": district, "Taluk": "", "Basin": district,
             "SubBasin": "", "Year": str(year), "Month": "0", "LanguageID": "1",
             "datasource": datasource, "locationguid": ""}
     r = requests.post(f"{KWRIS_BASE}/RainfallAnalytics.aspx/GetRFLocations",
-                      headers=KWRIS_HEADERS, data=json.dumps(body), timeout=90)
+                      headers=KWRIS_HEADERS, data=json.dumps(body),
+                      timeout=90, verify=VERIFY_TLS)
     r.raise_for_status()
     raw = r.json().get("d") or "{}"
     fc = json.loads(raw)
@@ -179,11 +197,32 @@ def kwris_get_stations(district=KWRIS_DISTRICT_BENGALURU_URBAN,
             "location_guid": p.get("LocationGUID"),
             "location_name": p.get("LocationName"),
             "district_name": p.get("DistrictName"),
+            "district_code": district,
             "block_name":    p.get("BlockName"),
             "types":         p.get("Types"),
             "lat": lat, "lng": lng,
         })
     return out
+
+
+def kwris_get_stations(districts=None, datasource=KWRIS_DATASOURCE, year=None):
+    """Fetch stations from multiple districts, dedupe by LocationGUID."""
+    districts = districts or KWRIS_DISTRICTS_DEFAULT
+    seen = {}
+    for d in districts:
+        try:
+            rows = kwris_get_stations_for_district(d, datasource=datasource, year=year)
+        except requests.RequestException as e:
+            print(f"  ! district {d}: {e}")
+            continue
+        added = 0
+        for r in rows:
+            g = r["location_guid"]
+            if g and g not in seen:
+                seen[g] = r
+                added += 1
+        print(f"  district {d}: {len(rows)} rows, {added} new (dedup by GUID)")
+    return list(seen.values())
 
 
 def _parse_date(txt: str, prefer: str | None = None):
@@ -267,7 +306,8 @@ def kwris_get_daily(location_guid, loc_name, year_from, year_to,
             "datasource": datasource, "orderby": "",
             "loc_name": loc_name or ""}
     r = requests.post(f"{KWRIS_BASE}/RainfallAnalytics.aspx/Get_LocationDetails",
-                      headers=KWRIS_HEADERS, data=json.dumps(body), timeout=180)
+                      headers=KWRIS_HEADERS, data=json.dumps(body),
+                      timeout=180, verify=VERIFY_TLS)
     r.raise_for_status()
     raw = r.json().get("d") or ""
     parts = raw.split("____")
@@ -276,19 +316,44 @@ def kwris_get_daily(location_guid, loc_name, year_from, year_to,
     return _parse_daily_table(parts[3])
 
 
-def cmd_history(start_year: int, end_year: int, limit: int = 0):
-    print(f"[history] fetching KWRIS stations for Bengaluru Urban (district={KWRIS_DISTRICT_BENGALURU_URBAN})...")
-    stations = kwris_get_stations()
-    print(f"  {len(stations)} stations")
+def cmd_history(start_year: int, end_year: int, limit: int = 0, districts=None):
+    districts = districts or KWRIS_DISTRICTS_DEFAULT
+    print(f"[history] fetching KWRIS stations for districts {districts}...")
+    stations = kwris_get_stations(districts=districts)
+    print(f"  {len(stations)} unique stations (before spatial filter)")
+
+    # Keep ALL stations. Coverage of KWRIS gauges strictly INSIDE BBMP wards is
+    # very sparse (~6 of 198 wards). Instead we IDW from the K nearest stations
+    # in the extended Bengaluru area at build time, which gives every ward a
+    # real 2009-> history using rainfall's natural spatial correlation.
+    # We annotate each row with its containing BBMP ward if it happens to sit in
+    # one (informational only), but do not filter.
+    wards_geo = json.loads(WARDS_GEOJSON.read_text())
+    inside = 0
+    for st in stations:
+        try:
+            lat = float(st["lat"]); lng = float(st["lng"])
+        except (TypeError, ValueError):
+            st["ward_no"] = ""; st["ward_name"] = ""
+            continue
+        wno, wname = assign_ward(lat, lng, wards_geo)
+        st["ward_no"] = wno if wno is not None else ""
+        st["ward_name"] = wname or ""
+        if wno is not None:
+            inside += 1
+    print(f"  ({inside} stations happen to sit inside a BBMP ward; all are kept for IDW.)")
 
     # Save catalog.
     with KWRIS_STATIONS_CSV.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["location_guid", "location_name", "district_name",
+                    "district_code", "ward_no", "ward_name",
                     "block_name", "types", "lat", "lng"])
-        for s in stations:
-            w.writerow([s["location_guid"], s["location_name"], s["district_name"],
-                        s["block_name"], s["types"], s["lat"], s["lng"]])
+        for st in stations:
+            w.writerow([st["location_guid"], st["location_name"], st["district_name"],
+                        st.get("district_code", ""),
+                        st.get("ward_no", ""), st.get("ward_name", ""),
+                        st["block_name"], st["types"], st["lat"], st["lng"]])
 
     manifest = {"start": start_year, "end": end_year,
                 "fetched_at": dt.datetime.utcnow().isoformat() + "Z", "stations": []}
@@ -320,6 +385,44 @@ def cmd_history(start_year: int, end_year: int, limit: int = 0):
 
 
 # ---------------------------------------------------------------------------
+# Discover KWRIS district codes (used by `districts` subcommand).
+# ---------------------------------------------------------------------------
+
+def _kwris_discover_districts():
+    """Fetch the RainfallAnalytics HTML page and parse the district <select>.
+    Returns [{code, name, lat, lng}, ...]."""
+    r = requests.get(f"{KWRIS_BASE}/RainfallAnalytics", timeout=30, verify=VERIFY_TLS)
+    r.raise_for_status()
+    html_txt = r.text
+    m = re.search(
+        r'<select[^>]*id="ctl00_ContentPlaceHolder1_ddl_district"[^>]*>(.*?)</select>',
+        html_txt, flags=re.S)
+    if not m:
+        return []
+    out = []
+    for opt in re.finditer(r'<option[^>]*value="([^"]*)"[^>]*>([^<]*)</option>', m.group(1)):
+        val, name = opt.group(1), opt.group(2).strip()
+        parts = val.split("#")
+        if not parts[0]:
+            continue
+        out.append({"code": parts[0], "name": name,
+                    "lat": parts[1] if len(parts) > 1 else "",
+                    "lng": parts[2] if len(parts) > 2 else ""})
+    return out
+
+
+def cmd_districts():
+    """Print KWRIS district codes so you can pass them to --districts."""
+    ds = _kwris_discover_districts()
+    if not ds:
+        print("[districts] Could not parse the dropdown -- KWRIS page markup may have changed.")
+        return
+    print(f"[districts] {len(ds)} Karnataka districts from KWRIS:")
+    for d in sorted(ds, key=lambda x: x["name"]):
+        print(f"  {d['code']:>4}  {d['name']}")
+
+
+# ---------------------------------------------------------------------------
 # KSNDMC live poll (idempotent per date)
 # ---------------------------------------------------------------------------
 
@@ -327,7 +430,8 @@ def _ksndmc_query():
     fields = ["TRG_ID", "WARD_NO", "RAIN__MM_", "DATE_"]
     r = requests.get(KSNDMC_LIVE_URL, params={
         "where": "1=1", "outFields": ",".join(fields),
-        "returnGeometry": "false", "f": "json"}, timeout=60)
+        "returnGeometry": "false", "f": "json"},
+        timeout=60, verify=VERIFY_TLS)
     r.raise_for_status()
     j = r.json()
     if "error" in j:
@@ -382,21 +486,31 @@ def cmd_live():
 # Build per-ward JSONs by merging KWRIS + KSNDMC
 # ---------------------------------------------------------------------------
 
-def _load_kwris_stations_with_wards(wards_geo):
-    """Return {ward_no: [guid, ...]} using spatial join on cached stations CSV."""
+import math
+
+def _haversine_km(lat1, lng1, lat2, lng2):
+    R = 6371.0
+    phi1 = math.radians(lat1); phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1); dlmb = math.radians(lng2 - lng1)
+    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlmb/2)**2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+def _load_kwris_station_catalog():
+    """Return list of {guid, name, lat, lng} for every station in the CSV."""
     if not KWRIS_STATIONS_CSV.exists():
-        return {}
-    ward_to_guids = defaultdict(list)
+        return []
+    out = []
     with KWRIS_STATIONS_CSV.open("r", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             try:
                 lat = float(row["lat"]); lng = float(row["lng"])
             except (TypeError, ValueError):
                 continue
-            wno, _ = assign_ward(lat, lng, wards_geo)
-            if wno is not None:
-                ward_to_guids[wno].append(row["location_guid"])
-    return ward_to_guids
+            out.append({"guid": row["location_guid"],
+                        "name": row["location_name"],
+                        "lat": lat, "lng": lng})
+    return out
 
 
 def _load_station_daily(guid):
@@ -433,14 +547,41 @@ def _load_ksndmc_log():
     return by
 
 
-def _ward_daily_from_kwris(guids):
-    """Mean daily across a ward's KWRIS stations. Returns {date: rainfall_mm}."""
-    bucket = defaultdict(list)
-    for guid in guids:
-        for r in _load_station_daily(guid):
-            if r["rainfall_mm"] is not None:
-                bucket[r["date"]].append(r["rainfall_mm"])
-    return {d: sum(v) / len(v) for d, v in bucket.items()}
+def _ward_daily_from_kwris_idw(centroid_lat, centroid_lng, k, catalog, daily_cache):
+    """
+    IDW-average daily rainfall across the K nearest KWRIS stations.
+    - centroid_lat/lng: ward centroid.
+    - k: number of nearest stations to blend.
+    - catalog: full station catalog (list of {guid, name, lat, lng}).
+    - daily_cache: {guid: [{date, rainfall_mm}]} shared across all wards.
+    Returns {date: rainfall_mm}.
+    """
+    if not catalog:
+        return {}
+    # Rank stations by distance to the ward centroid.
+    ranked = sorted(
+        catalog,
+        key=lambda st: _haversine_km(centroid_lat, centroid_lng, st["lat"], st["lng"])
+    )[:max(k, 1)]
+    # Precompute weights and load daily series for each.
+    weighted = []
+    for st in ranked:
+        dist = _haversine_km(centroid_lat, centroid_lng, st["lat"], st["lng"])
+        # Guard against div/0 for a station exactly at the centroid.
+        w = 1.0 / max(dist, 0.01) ** 2
+        if st["guid"] not in daily_cache:
+            daily_cache[st["guid"]] = _load_station_daily(st["guid"])
+        weighted.append((w, daily_cache[st["guid"]]))
+    # Blend per-date.
+    num = defaultdict(float)   # sum of w_i * rainfall_i
+    den = defaultdict(float)   # sum of w_i (only where the station has a value)
+    for w, series in weighted:
+        for r in series:
+            if r["rainfall_mm"] is None:
+                continue
+            num[r["date"]] += w * r["rainfall_mm"]
+            den[r["date"]] += w
+    return {d: num[d] / den[d] for d in num if den[d] > 0}
 
 
 def _monthly_totals(daily_rows):
@@ -455,23 +596,28 @@ def _monthly_totals(daily_rows):
 def cmd_build():
     print("[build] merging KWRIS + KSNDMC into per-ward JSON...")
     wards_geo = json.loads(WARDS_GEOJSON.read_text())
-    ward_to_guids = _load_kwris_stations_with_wards(wards_geo)
+    catalog = _load_kwris_station_catalog()
     ksndmc = _load_ksndmc_log()
+    daily_cache = {}  # {guid: [{date, rainfall_mm}]} shared across wards
 
-    kwris_stations_total = sum(len(v) for v in ward_to_guids.values())
     ksndmc_dates = sorted({d for (d, _) in ksndmc.keys()})
-    print(f"  KWRIS stations matched to a ward: {kwris_stations_total} "
-          f"across {len(ward_to_guids)} wards")
+    print(f"  KWRIS catalog: {len(catalog)} stations (IDW from 3 nearest for each ward)")
     print(f"  KSNDMC live log covers {len(ksndmc_dates)} distinct dates")
 
     today = dt.date.today().isoformat()
     now_utc = dt.datetime.utcnow().isoformat() + "Z"
     n_written = 0
+    K_NEAREST = 3
 
     for feat in wards_geo["features"]:
         p = feat["properties"]
         wno = p["ward_no"]
-        kwris_daily = _ward_daily_from_kwris(ward_to_guids.get(wno, []))
+        centroid = p.get("centroid") or [None, None]
+        c_lng, c_lat = centroid[0], centroid[1]
+        if c_lat is None or c_lng is None:
+            kwris_daily = {}
+        else:
+            kwris_daily = _ward_daily_from_kwris_idw(c_lat, c_lng, K_NEAREST, catalog, daily_cache)
         kwris_last = max(kwris_daily) if kwris_daily else None
 
         # Assemble daily rows. KWRIS covers up to kwris_last; KSNDMC fills after.
@@ -530,11 +676,16 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    def _dlist(v): return [x.strip() for x in v.split(",") if x.strip()]
+
     p_hist = sub.add_parser("history", help="Scrape KWRIS daily history (slow, one-time).")
     p_hist.add_argument("--start", type=int, default=2009)
     p_hist.add_argument("--end",   type=int, default=dt.date.today().year)
     p_hist.add_argument("--limit", type=int, default=0, help="Testing: stop after N stations.")
+    p_hist.add_argument("--districts", type=_dlist, default=KWRIS_DISTRICTS_DEFAULT,
+                        help="Comma-separated KWRIS district codes (default: 166,165,167).")
 
+    sub.add_parser("districts", help="List KWRIS district codes (dumps whatever the dropdown API returns).")
     sub.add_parser("live", help="Poll KSNDMC BBMP live and append to rolling log.")
     sub.add_parser("build", help="Merge caches into data/rainfall/<ward>.json.")
 
@@ -542,16 +693,19 @@ def main():
     p_all.add_argument("--start", type=int, default=2009)
     p_all.add_argument("--end",   type=int, default=dt.date.today().year)
     p_all.add_argument("--limit", type=int, default=0)
+    p_all.add_argument("--districts", type=_dlist, default=KWRIS_DISTRICTS_DEFAULT)
 
     args = p.parse_args()
     if args.cmd == "history":
-        cmd_history(args.start, args.end, args.limit)
+        cmd_history(args.start, args.end, args.limit, districts=args.districts)
+    elif args.cmd == "districts":
+        cmd_districts()
     elif args.cmd == "live":
         cmd_live()
     elif args.cmd == "build":
         cmd_build()
     elif args.cmd == "all":
-        cmd_history(args.start, args.end, args.limit)
+        cmd_history(args.start, args.end, args.limit, districts=args.districts)
         cmd_live()
         cmd_build()
 
