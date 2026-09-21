@@ -411,6 +411,13 @@ function analysisCriticalLabel(value = currentLens) {
   })[value] || "Critical ward";
 }
 
+function stableStatusLabel(value = currentLens) {
+  if (value === "groundwater") return "No strong trend";
+  if (value === "current_stress") return "Normal / recovered";
+  if (["extraction", "pumping_stress", "specific_capacity", "volumetric_deficit"].includes(value)) return "Below threshold";
+  return "No strong trend";
+}
+
 function groundwaterWardSummary(wardNo) {
   const c = criticalGroundwaterByNo.get(normalizeWardNo(wardNo));
   if (!c) return null;
@@ -781,6 +788,10 @@ function updateLensCounts() {
   if (lbl && typeof analysisLensLabel === "function") {
     lbl.textContent = `Deepening · ${analysisLensLabel()}`;
   }
+  const stableLbl = document.getElementById("metric-stable-label");
+  if (stableLbl) stableLbl.textContent = stableStatusLabel();
+  const stableChip = document.getElementById("ward-stable-chip");
+  if (stableChip) stableChip.textContent = stableStatusLabel();
 }
 
 function wardFeaturesForKpi(kind) {
@@ -818,7 +829,7 @@ function applyKpiHighlight(kind) {
     covered: "Highlighted: wards covered by reporting sensors",
     critical: `Highlighted: ${analysisCriticalLabel()}`,
     rise: "Highlighted: rising wards",
-    stable: "Highlighted: stable wards"
+    stable: `Highlighted: ${stableStatusLabel()} wards`
   };
   quickViewLabel = labels[kind] || "Highlighted wards";
   document.querySelectorAll("[data-kpi-highlight]").forEach(card => {
@@ -920,7 +931,7 @@ function wardStatusLabel(key) {
   if (currentLens === "current_stress") {
     return ({ critical: "Critical current stress", rise: "Elevated current stress", stable: "Normal / recovered", none: "No current-stress data" })[key] || "All wards";
   }
-  return ({ critical: "Critical", rise: "Rising / improving", stable: "Stable", high: "High coverage", low: "Needs coverage", none: "No sensors" })[key] || "All wards";
+  return ({ critical: "Critical", rise: "Rising / improving", stable: stableStatusLabel(), high: "High coverage", low: "Needs coverage", none: "No sensors" })[key] || "All wards";
 }
 
 // ---------- Sensors ----------
@@ -994,7 +1005,7 @@ function buildLegend() {
       ? [
           ["critical", CRITICALITY_COLORS.critical, analysisCriticalLabel()],
           ["rise", CRITICALITY_COLORS.rise, currentLens === "current_stress" ? "Elevated current stress" : "Groundwater Rise"],
-          ["stable", CRITICALITY_COLORS.stable, currentLens === "groundwater" ? "Stable groundwater trend" : currentLens === "current_stress" ? "Normal / recovered" : "Below threshold"],
+          ["stable", CRITICALITY_COLORS.stable, stableStatusLabel()],
           ["none", BASE_WARD_COLOR.fill, "Other wards"],
         ]
           .filter(([key]) => key !== "rise" || ["groundwater", "current_stress"].includes(currentLens))

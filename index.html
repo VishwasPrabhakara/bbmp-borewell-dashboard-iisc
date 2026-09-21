@@ -37,9 +37,9 @@
     <div class="metric-value metric-rise" id="metric-rise">—</div>
     <div class="metric-label">Rising</div>
   </div>
-  <div class="metric-card kpi-clickable" data-kpi-highlight="stable" role="button" tabindex="0" title="Highlight stable wards">
+  <div class="metric-card kpi-clickable" data-kpi-highlight="stable" role="button" tabindex="0" title="Highlight no-strong-trend wards">
     <div class="metric-value metric-stable" id="metric-stable">—</div>
-    <div class="metric-label">Stable</div>
+    <div class="metric-label" id="metric-stable-label">No strong trend</div>
   </div>
 </div>
 
@@ -129,7 +129,7 @@
         <button class="chip active" data-ward-status="">All wards</button>
         <button class="chip critical-chip" data-ward-status="critical">Critical</button>
         <button class="chip rise-chip" data-ward-status="rise">Rising</button>
-        <button class="chip stable-chip" data-ward-status="stable">Stable</button>
+        <button class="chip stable-chip" data-ward-status="stable" id="ward-stable-chip">No strong trend</button>
       </div>
     </div>
     <div class="filter-section">
