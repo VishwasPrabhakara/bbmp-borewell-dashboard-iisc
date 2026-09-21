@@ -46,12 +46,6 @@ let highlightedWardNos = new Set();
 let quickViewLabel = "";
 
 function defaultWardStyle(feat) {
-  // NO_DATA_WARD_STYLE
-  { const _p = (feat && feat.properties) || {};
-    if (!(_p.sensor_with_data > 0)) {
-      return { fillColor: '#d1d5db', color: '#9ca3af', weight: 0.6, fillOpacity: 0.55, dashArray: '3 3' };
-    } }
-
   const p = feat.properties;
   const isSelected = selectedWardNo != null && p.ward_no === selectedWardNo;
   const status = wardStatusKey(p);
@@ -59,6 +53,16 @@ function defaultWardStyle(feat) {
   const isHighlighted = highlightedWardNos.has(normalizeWardNo(p.ward_no));
   const quickDimmed = highlightedWardNos.size > 0 && !isHighlighted;
   const dimmed = (selectedWardNo != null && !isSelected) || filterDimmed || quickDimmed;
+  if (!(p.sensor_with_data > 0)) {
+    return {
+      fillColor: '#d1d5db',
+      color: isSelected ? "#0b3d4c" : isHighlighted ? "#0e7490" : "#9ca3af",
+      weight: isSelected ? 3 : isHighlighted ? 2.8 : 0.6,
+      fillOpacity: dimmed ? 0.12 : isHighlighted ? 0.72 : 0.55,
+      opacity: dimmed ? 0.35 : 1,
+      dashArray: isHighlighted ? null : '3 3'
+    };
+  }
   const colored = wardColor(p);
   return {
     color: isSelected ? "#0b3d4c" : colored.stroke,
@@ -526,6 +530,7 @@ async function boot() {
   wireToolbar();
   wireSearch();
   wireFilters();
+  wireKpiCards();
   wireDetailClose();
   try {
     await loadData();
@@ -742,6 +747,7 @@ function activeWardPropsForDetail() {
 
 function updateMetrics() {
   _guardLens();
+  clearKpiHighlightState();
   const number = v => v == null ? "—" : Number(v).toLocaleString("en-IN");
   const usableSet = new Set(["GOOD","USABLE_WITH_CAUTION"]);
   const reporting = sensors.filter(s => {
@@ -774,6 +780,71 @@ function updateLensCounts() {
   if (lbl && typeof analysisLensLabel === "function") {
     lbl.textContent = `Deepening · ${analysisLensLabel()}`;
   }
+}
+
+function wardFeaturesForKpi(kind) {
+  if (!wards?.features) return [];
+  if (kind === "total") {
+    return wards.features.filter(f => (f.properties.sensor_total || 0) > 0 || (sensorsByWard[f.properties.ward_no] || []).length > 0);
+  }
+  if (kind === "covered") {
+    return wards.features.filter(f => (f.properties.sensor_with_data || 0) > 0);
+  }
+  return wards.features.filter(f => wardStatusKey(f.properties) === kind);
+}
+
+function fitHighlightedWards(features) {
+  if (!features.length || !map || !wardLayer) return;
+  const wanted = new Set(features.map(f => normalizeWardNo(f.properties.ward_no)));
+  const bounds = L.latLngBounds([]);
+  wardLayer.eachLayer(layer => {
+    const wardNo = normalizeWardNo(layer.feature?.properties?.ward_no);
+    if (wanted.has(wardNo) && typeof layer.getBounds === "function") {
+      bounds.extend(layer.getBounds());
+    }
+  });
+  if (bounds.isValid()) map.fitBounds(bounds, { padding: [44, 44], maxZoom: 13 });
+}
+
+function applyKpiHighlight(kind) {
+  if (!wards?.features) return;
+  const features = wardFeaturesForKpi(kind);
+  highlightedWardNos = new Set(features.map(f => normalizeWardNo(f.properties.ward_no)));
+  selectedWardNo = null;
+  selectedSensorUid = null;
+  const labels = {
+    total: "Highlighted: wards with sensors",
+    covered: "Highlighted: wards covered by reporting sensors",
+    critical: `Highlighted: ${analysisCriticalLabel()}`,
+    rise: "Highlighted: rising wards",
+    stable: "Highlighted: stable wards"
+  };
+  quickViewLabel = labels[kind] || "Highlighted wards";
+  document.querySelectorAll("[data-kpi-highlight]").forEach(card => {
+    card.classList.toggle("active", card.dataset.kpiHighlight === kind);
+  });
+  closeAllOverlays();
+  if (wardLayer) wardLayer.setStyle(defaultWardStyle);
+  renderSensors();
+  buildLegend();
+  fitHighlightedWards(features);
+}
+
+function clearKpiHighlightState() {
+  document.querySelectorAll("[data-kpi-highlight]").forEach(card => card.classList.remove("active"));
+}
+
+function wireKpiCards() {
+  document.querySelectorAll("[data-kpi-highlight]").forEach(card => {
+    const run = () => applyKpiHighlight(card.dataset.kpiHighlight);
+    card.addEventListener("click", run);
+    card.addEventListener("keydown", e => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        run();
+      }
+    });
+  });
 }
 
 // ---------- Map ----------
@@ -1113,6 +1184,7 @@ function wireFilters() {
   document.querySelectorAll("[data-quick]").forEach(chip => {
     chip.addEventListener("click", () => {
       const which = chip.dataset.quick;
+      clearKpiHighlightState();
       closeAllOverlays();
       if (which === "reset") {
         selectedWardNo = null;

@@ -71,6 +71,14 @@ button { font-family: inherit; }
   border-right: 1px solid var(--border);
 }
 .metric-card:last-child { border-right: 0; }
+.metric-card.kpi-clickable { cursor: pointer; transition: background 0.16s ease, box-shadow 0.16s ease; }
+.metric-card.kpi-clickable:hover,
+.metric-card.kpi-clickable:focus-visible {
+  background: rgba(255,255,255,0.92);
+  box-shadow: inset 0 -2px 0 rgba(14,116,144,0.45);
+  outline: none;
+}
+.metric-card.kpi-clickable.active { background: rgba(236, 253, 245, 0.92); box-shadow: inset 0 -2px 0 #0e7490; }
 .metric-value { font-size: 21px; line-height: 1.1; font-weight: 750; color: var(--brand); letter-spacing: 0; white-space: nowrap; }
 .metric-label { margin-top: 3px; font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.45px; white-space: nowrap; }
 .metric-warn .metric-value { color: #b45309; }
@@ -442,4 +450,3 @@ body.tv-mode #status-strip { grid-template-columns: repeat(5, minmax(160px, 1fr)
 /* Classification method toggle */
 #criticality-method { min-width: 300px; font-size: 12.5px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
 #criticality-method:hover { border-color: var(--brand-2); }
-
