@@ -44,6 +44,7 @@ let map;
 let selectedWardNo = null;
 let highlightedWardNos = new Set();
 let quickViewLabel = "";
+let highlightStyleMode = "";
 
 function defaultWardStyle(feat) {
   const p = feat.properties;
@@ -51,25 +52,26 @@ function defaultWardStyle(feat) {
   const status = wardStatusKey(p);
   const filterDimmed = wardStatusFilter && status !== wardStatusFilter;
   const isHighlighted = highlightedWardNos.has(normalizeWardNo(p.ward_no));
+  const queryHighlighted = isHighlighted && highlightStyleMode === "query";
   const quickDimmed = highlightedWardNos.size > 0 && !isHighlighted;
   const dimmed = (selectedWardNo != null && !isSelected) || filterDimmed || quickDimmed;
   if (!(p.sensor_with_data > 0)) {
     return {
-      fillColor: '#d1d5db',
-      color: isSelected ? "#0b3d4c" : isHighlighted ? "#0e7490" : "#9ca3af",
-      weight: isSelected ? 3 : isHighlighted ? 2.8 : 0.6,
-      fillOpacity: dimmed ? 0.12 : isHighlighted ? 0.72 : 0.55,
+      fillColor: queryHighlighted ? "#2563eb" : '#d1d5db',
+      color: isSelected ? "#0b3d4c" : queryHighlighted ? "#1d4ed8" : isHighlighted ? "#0e7490" : "#9ca3af",
+      weight: isSelected ? 3 : isHighlighted ? 3.2 : 0.6,
+      fillOpacity: dimmed ? 0.12 : queryHighlighted ? 0.78 : isHighlighted ? 0.72 : 0.55,
       opacity: dimmed ? 0.35 : 1,
       dashArray: isHighlighted ? null : '3 3'
     };
   }
   const colored = wardColor(p);
   return {
-    color: isSelected ? "#0b3d4c" : colored.stroke,
-    weight: isSelected ? 3 : isHighlighted ? 2.8 : (status === "none" ? 0.9 : 1.35),
+    color: isSelected ? "#0b3d4c" : queryHighlighted ? "#1d4ed8" : colored.stroke,
+    weight: isSelected ? 3 : isHighlighted ? 3.2 : (status === "none" ? 0.9 : 1.35),
     opacity: dimmed ? 0.16 : 0.95,
-    fillColor: isSelected ? "#028090" : colored.fill,
-    fillOpacity: dimmed ? 0.05 : (isSelected ? 0.42 : isHighlighted ? Math.max(colored.opacity, 0.5) : colored.opacity),
+    fillColor: isSelected ? "#028090" : queryHighlighted ? "#2563eb" : colored.fill,
+    fillOpacity: dimmed ? 0.05 : (isSelected ? 0.42 : queryHighlighted ? 0.78 : isHighlighted ? Math.max(colored.opacity, 0.5) : colored.opacity),
   };
 }
 
@@ -838,6 +840,7 @@ function applyKpiHighlight(kind) {
   if (!wards?.features) return;
   const features = wardFeaturesForKpi(kind);
   highlightedWardNos = new Set(features.map(f => normalizeWardNo(f.properties.ward_no)));
+  highlightStyleMode = "";
   selectedWardNo = null;
   selectedSensorUid = null;
   const labels = {
@@ -872,6 +875,7 @@ function applyCommonQuery() {
   if (input) input.value = String(threshold);
   const features = wards.features.filter(f => commonLensHitCount(f.properties.ward_no) >= threshold);
   highlightedWardNos = new Set(features.map(f => normalizeWardNo(f.properties.ward_no)));
+  highlightStyleMode = "query";
   selectedWardNo = null;
   selectedSensorUid = null;
   wardStatusFilter = "";
@@ -1062,6 +1066,9 @@ function buildLegend() {
           [CHORO[6], currentLens === "readings" ? "Higher reading load" : "Higher coverage"],
         ]
       : [];
+    const queryItems = highlightStyleMode === "query" && highlightedWardNos.size
+      ? [["#2563eb", quickViewLabel || "Query result"]]
+      : [];
     const visibleSensorStatuses = new Set(filteredSensors().map(sensorStatusKey));
     const sensorItems = [
       ["with_data", SENSOR_COLORS.with_data, "Reporting sensor"],
@@ -1069,7 +1076,7 @@ function buildLegend() {
     ]
       .filter(([key]) => visibleSensorStatuses.has(key))
       .map(([, color, label]) => [color, label]);
-    items.innerHTML = [...wardItems, ...sensorItems]
+    items.innerHTML = [...queryItems, ...wardItems, ...sensorItems]
       .map(([color, label]) => `<div class="legend-item"><span style="background:${color}"></span>${label}</div>`)
       .join("");
   }
@@ -1256,11 +1263,13 @@ function wireFilters() {
     chip.addEventListener("click", () => {
       const which = chip.dataset.quick;
       clearKpiHighlightState();
+      highlightStyleMode = "";
       closeAllOverlays();
       if (which === "reset") {
         selectedWardNo = null;
         selectedSensorUid = null;
         highlightedWardNos = new Set();
+        highlightStyleMode = "";
         quickViewLabel = "";
         wardStatusFilter = "";
         sensorStatusFilter = "with_data";
