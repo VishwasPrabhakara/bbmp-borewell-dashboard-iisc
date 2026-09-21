@@ -868,26 +868,66 @@ function updateCommonQueryNote(count = null, threshold = commonLensThreshold()) 
   note.textContent = `Highlights wards active in at least ${threshold} of 5 component lenses.${suffix}`;
 }
 
-function applyCommonQuery() {
-  if (!wards?.features) return;
-  const threshold = commonLensThreshold();
-  const input = document.getElementById("common-threshold");
-  if (input) input.value = String(threshold);
-  const features = wards.features.filter(f => commonLensHitCount(f.properties.ward_no) >= threshold);
+function applyQueryResult(features, label) {
   highlightedWardNos = new Set(features.map(f => normalizeWardNo(f.properties.ward_no)));
   highlightStyleMode = "query";
   selectedWardNo = null;
   selectedSensorUid = null;
   wardStatusFilter = "";
-  quickViewLabel = `Highlighted: Common query >= ${threshold}/5 lenses`;
+  quickViewLabel = label;
   clearKpiHighlightState();
   document.querySelectorAll("[data-ward-status]").forEach(c => c.classList.toggle("active", c.dataset.wardStatus === ""));
   closeAllOverlays();
   if (wardLayer) wardLayer.setStyle(defaultWardStyle);
   renderSensors();
   buildLegend();
-  updateCommonQueryNote(features.length, threshold);
+  updateCommonQueryNote(features.length, commonLensThreshold());
   fitHighlightedWards(features);
+}
+
+function applyCommonQuery() {
+  if (!wards?.features) return;
+  const threshold = commonLensThreshold();
+  const input = document.getElementById("common-threshold");
+  if (input) input.value = String(threshold);
+  const features = wards.features.filter(f => commonLensHitCount(f.properties.ward_no) >= threshold);
+  applyQueryResult(features, `Highlighted: Common query >= ${threshold}/5 lenses`);
+  updateCommonQueryNote(features.length, threshold);
+}
+
+function queryPresetFeatures(preset) {
+  if (!wards?.features) return [];
+  return wards.features.filter(f => {
+    const wardNo = f.properties.ward_no;
+    if (preset === "groundwater_critical") return groundwaterWardStatusKey(wardNo) === "critical";
+    if (preset === "previous_consumption") return isPreviousConsumptionCriticalWard(wardNo);
+    if (preset === "volumetric_deficit") return wardVolumetricDeficit(wardNo).deficitMl >= 10;
+    const pumping = pumpingWardSummaryForNo(wardNo);
+    if (preset === "extraction") return Boolean(pumping?.criticalByExtraction);
+    if (preset === "pumping_stress") return Boolean(pumping?.highNormalizedDrawdown);
+    if (preset === "specific_capacity") return Boolean(pumping?.criticalBySpecificCapacity);
+    if (preset === "current_stress_critical") return currentStressByNo.get(normalizeWardNo(wardNo))?.stressCategory?.startsWith("Critical");
+    if (preset === "current_stress_elevated") return currentStressByNo.get(normalizeWardNo(wardNo))?.stressCategory?.startsWith("Elevated");
+    return false;
+  });
+}
+
+function queryPresetLabel(preset) {
+  return ({
+    groundwater_critical: "Query result: Groundwater critical",
+    previous_consumption: "Query result: Previous consumption critical",
+    volumetric_deficit: "Query result: High volumetric deficit",
+    extraction: "Query result: High extraction",
+    pumping_stress: "Query result: Volume-normalized drawdown",
+    specific_capacity: "Query result: Low specific capacity",
+    current_stress_critical: "Query result: Current stress critical",
+    current_stress_elevated: "Query result: Current stress elevated",
+  })[preset] || "Query result";
+}
+
+function applyPresetQuery(preset) {
+  const features = queryPresetFeatures(preset);
+  applyQueryResult(features, queryPresetLabel(preset));
 }
 
 function clearKpiHighlightState() {
@@ -1235,6 +1275,9 @@ function wireFilters() {
       }
     });
   }
+  document.querySelectorAll("[data-query-preset]").forEach(chip => {
+    chip.addEventListener("click", () => applyPresetQuery(chip.dataset.queryPreset));
+  });
   document.querySelectorAll("[data-ward-status]").forEach(chip => {
     chip.addEventListener("click", () => {
       wardStatusFilter = chip.dataset.wardStatus;

@@ -185,6 +185,8 @@ button { font-family: inherit; }
   width: 64px; border: 1px solid var(--border); border-radius: 8px;
   padding: 8px 10px; color: var(--text); background: #fff;
 }
+.query-chip-group { margin-top: 10px; }
+.query-chip-group .chip { border-radius: 8px; padding: 7px 10px; font-size: 12px; }
 .chip-group { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip-group.vertical { flex-direction: column; }
 .chip {
