@@ -1126,8 +1126,8 @@ function buildLegend() {
       ? `Wards classified by ${analysisLensLabel()}${currentLens === "groundwater" ? ` (${groundwaterMethodLabel()})` : ""}`
       : ({ coverage: "Wards shaded by reporting sensor coverage", readings: "Wards shaded by reading volume" })[currentLens];
     cap.textContent = selectedWardNo != null
-      ? "Ward isolated — click map background to clear"
-      : quickViewLabel || lensLabel;
+      ? "Ward isolated - click map background to clear"
+      : (highlightStyleMode === "query" ? lensLabel : (quickViewLabel || lensLabel));
   }
 }
 
