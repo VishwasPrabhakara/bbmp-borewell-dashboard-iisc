@@ -309,7 +309,7 @@ function wardVolumetricDeficit(wardNo) {
     const areaKm2 = Number(feature?.properties?.area_km2 ?? 8);
     if (!Number.isFinite(slope) || slope <= 0) return { ...local, deficitMl: 0, deficitM3: 0, deficitTankers: 0 };
     const totalDropM = slope * (durationDays / 7) * 0.3048;
-    const deficitM3 = areaKm2 * 1000000 * totalDropM * 0.02;
+    const deficitM3 = areaKm2 * 1000000 * totalDropM * 0.05;
     return {
       ...local,
       deficitMl: deficitM3 / 1000,
@@ -327,7 +327,7 @@ function wardVolumetricDeficit(wardNo) {
   const pointCount = Number(ward?.usableWeeklyValues ?? ward?.pointCount ?? 8);
   const durationDays = Math.max(pointCount * 7, 30);
   const totalDropM = slope * (durationDays / 7) * 0.3048;
-  return { deficitMl: (areaKm2 * 1000000 * totalDropM * 0.02) / 1000 };
+  return { deficitMl: (areaKm2 * 1000000 * totalDropM * 0.05) / 1000 };
 }
 
 function overallCriticalLensFlags(wardNo) {
