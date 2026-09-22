@@ -8,7 +8,7 @@ function _guardLens() {
   }
 }
 
-// BBMP Borewell Dashboard — IISc for BWSSB
+// BWSSB Borewell Dashboard — IISc
 // Full-screen map first. Everything else opens on click.
 
 const CONFIG = window.DASHBOARD_CONFIG || { source: "static", apiBase: "" };

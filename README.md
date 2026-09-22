@@ -1,6 +1,6 @@
-# BBMP Borewell Dashboard — IISc for BWSSB
+# BWSSB Borewell Dashboard — IISc
 
-An interactive dashboard for exploring BBMP's 198 wards and the borewell sensors reporting inside them. Built for the Indian Institute of Science team to hand over to BWSSB.
+An interactive dashboard for exploring BBMP's 198 wards and the borewell sensors reporting inside them. Built by the Indian Institute of Science team for BWSSB.
 
 - **Live URL** (once deployed): https://\<your-user\>.github.io/bbmp-borewell-dashboard-iisc/
 - **Codebase**: static HTML/JS/CSS (this repo). Two data modes: (a) read `data/*.json` shipped with the site, or (b) call a Cloudflare Worker + D1 API. Switch via `js/config.js`.
